@@ -1,0 +1,123 @@
+/**
+ * Authentication Routes
+ * Login for FM admin users
+ */
+
+import { Router } from 'express';
+import bcrypt from 'bcrypt';
+import { db } from '../db/index.js';
+import { generateToken, authenticateToken } from '../middleware/auth.js';
+import { logger } from '../utils/logger.js';
+
+const router = Router();
+
+// POST /api/auth/login
+router.post('/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email and password required' });
+    }
+
+    // Find user
+    const result = await db.query(
+      `SELECT fa.id, fa.email, fa.password_hash, fa.name, fa.fm_company_id, fa.is_admin, fa.is_platform_admin, fc.name as company_name
+       FROM fm_admin fa
+       JOIN fm_company fc ON fa.fm_company_id = fc.id
+       WHERE fa.email = $1`,
+      [email.toLowerCase()]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    const user = result.rows[0];
+
+    // Verify password
+    const validPassword = await bcrypt.compare(password, user.password_hash);
+    if (!validPassword) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    // Generate token
+    const token = generateToken(user.id, user.email);
+
+    logger.info('User logged in', { userId: user.id, email: user.email });
+
+    res.json({
+      token,
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        companyId: user.fm_company_id,
+        companyName: user.company_name,
+        is_admin: user.is_admin,
+        is_platform_admin: user.is_platform_admin,
+      },
+    });
+  } catch (error) {
+    logger.error('Login error', { error: error.message });
+    res.status(500).json({ error: 'Login failed' });
+  }
+});
+
+// GET /api/auth/me - Get current user
+router.get('/me', authenticateToken, async (req, res) => {
+  res.json({
+    user: {
+      id: req.user.id,
+      email: req.user.email,
+      name: req.user.name,
+      companyId: req.user.fm_company_id,
+      companyName: req.user.company_name,
+      is_admin: req.user.is_admin,
+      is_platform_admin: req.user.is_platform_admin,
+    },
+  });
+});
+
+// POST /api/auth/change-password
+router.post('/change-password', authenticateToken, async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ error: 'Current and new password required' });
+    }
+
+    if (newPassword.length < 8) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters' });
+    }
+
+    // Get current password hash
+    const result = await db.query(
+      'SELECT password_hash FROM fm_admin WHERE id = $1',
+      [req.user.id]
+    );
+
+    const validPassword = await bcrypt.compare(currentPassword, result.rows[0].password_hash);
+    if (!validPassword) {
+      return res.status(401).json({ error: 'Current password is incorrect' });
+    }
+
+    // Hash new password
+    const newHash = await bcrypt.hash(newPassword, 10);
+
+    await db.query(
+      'UPDATE fm_admin SET password_hash = $1 WHERE id = $2',
+      [newHash, req.user.id]
+    );
+
+    logger.info('Password changed', { userId: req.user.id });
+
+    res.json({ message: 'Password changed successfully' });
+  } catch (error) {
+    logger.error('Password change error', { error: error.message });
+    res.status(500).json({ error: 'Password change failed' });
+  }
+});
+
+export default router;
