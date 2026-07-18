@@ -14,6 +14,8 @@ import { config } from './config/index.js';
 import { logger } from './utils/logger.js';
 import { db } from './db/index.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
+import { authenticateToken } from './middleware/auth.js';
+import { requireActiveSubscription } from './middleware/requireActiveSubscription.js';
 import { initializeScheduler } from './jobs/scheduler.js';
 
 // Routes
@@ -112,17 +114,22 @@ app.get('/health', async (req, res) => {
 
 // API Routes
 app.use('/api/auth', authRoutes);
-app.use('/api/buildings', buildingsRoutes);
-app.use('/api/tenants', tenantsRoutes);
-app.use('/api/service-providers', serviceProvidersRoutes);
-app.use('/api/pm-companies', pmCompaniesRoutes);
-app.use('/api/incidents', incidentsRoutes);
-app.use('/api/reports', reportsRoutes);
+// Core product routes — require an active (trial or paid) subscription.
+// Billing/settings/auth/webhooks/cockpit/sp-report stay exempt: a blocked
+// customer still needs to log in, see why, and pay; external SPs and Twilio
+// hit sp-report/webhooks unauthenticated; cockpit is a token-authed page
+// used mid-emergency, not tied to the logged-in company's billing state.
+app.use('/api/buildings', authenticateToken, requireActiveSubscription, buildingsRoutes);
+app.use('/api/tenants', authenticateToken, requireActiveSubscription, tenantsRoutes);
+app.use('/api/service-providers', authenticateToken, requireActiveSubscription, serviceProvidersRoutes);
+app.use('/api/pm-companies', authenticateToken, requireActiveSubscription, pmCompaniesRoutes);
+app.use('/api/incidents', authenticateToken, requireActiveSubscription, incidentsRoutes);
+app.use('/api/reports', authenticateToken, requireActiveSubscription, reportsRoutes);
+app.use('/api/employees', authenticateToken, requireActiveSubscription, employeesRoutes);
+app.use('/api/oncall', authenticateToken, requireActiveSubscription, oncallRoutes);
 app.use('/api/sp-report', spReportRoutes);
 app.use('/api/webhooks', webhooksRoutes);
 app.use('/api/cockpit', cockpitRoutes);
-app.use('/api/employees', employeesRoutes);
-app.use('/api/oncall', oncallRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/register', registerRoutes);
 app.use('/api/password-reset', passwordResetRoutes);
