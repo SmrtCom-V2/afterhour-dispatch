@@ -38,7 +38,10 @@ class TwilioProvider {
   async init() {
     const twilio = await import('twilio');
     this.client = twilio.default(this.accountSid, this.authToken);
-    this.VoiceResponse = twilio.twiml.VoiceResponse;
+    // twilio@5's ESM default export carries .twiml (not the module namespace
+    // itself) — verified live July 18 after telephony was turned on for the
+    // first time and this path finally executed.
+    this.VoiceResponse = twilio.default.twiml.VoiceResponse;
   }
 
   async makeCall(to, webhookUrl, metadata = {}) {

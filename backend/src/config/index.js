@@ -56,6 +56,7 @@ export const config = {
 
   // App-specific
   app: {
+    url: process.env.APP_URL || 'http://localhost:3005',
     defaultAiConfidenceThreshold: parseInt(process.env.DEFAULT_AI_CONFIDENCE_THRESHOLD || '80', 10),
     spCallTimeoutSeconds: parseInt(process.env.SP_CALL_TIMEOUT_SECONDS || '120', 10),
     spSmsTimeoutSeconds: parseInt(process.env.SP_SMS_TIMEOUT_SECONDS || '600', 10),

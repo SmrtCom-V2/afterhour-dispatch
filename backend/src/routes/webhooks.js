@@ -4,9 +4,11 @@
  */
 
 import { Router } from 'express';
+import twilio from 'twilio';
 import { db } from '../db/index.js';
 import { logger } from '../utils/logger.js';
 import { getTelephonyProvider } from '../providers/telephony/index.js';
+import { config } from '../config/index.js';
 import {
   handleIncomingCall,
   handleLanguageSelection,
@@ -16,6 +18,37 @@ import {
 import { handleSpResponse } from '../services/dispatch.js';
 
 const router = Router();
+
+/**
+ * Twilio signs every webhook request with X-Twilio-Signature (HMAC over the
+ * full URL + sorted POST params, using the account auth token). Without this
+ * check, anyone who guesses/finds an attemptId or callId can forge dispatch
+ * acceptances or call-flow steps. Only skips validation when running the
+ * mock provider (local dev has no real Twilio signature to check).
+ */
+function verifyTwilioSignature(req, res, next) {
+  if (config.telephony.provider !== 'twilio') {
+    return next();
+  }
+
+  const signature = req.headers['x-twilio-signature'];
+  const fullUrl = `${config.app.url}${req.originalUrl}`;
+
+  const isValid =
+    !!signature &&
+    twilio.validateRequest(config.telephony.twilio.authToken, signature, fullUrl, req.body || {});
+
+  if (!isValid) {
+    logger.warn('Rejected webhook with invalid/missing Twilio signature', {
+      path: req.originalUrl,
+    });
+    return res.status(403).send('Invalid signature');
+  }
+
+  return next();
+}
+
+router.use(verifyTwilioSignature);
 
 // Incoming call webhook (from telephony provider)
 router.post('/incoming-call', async (req, res) => {
@@ -236,6 +269,42 @@ router.post('/sp-call/:attemptId/status', async (req, res) => {
     res.sendStatus(200);
   } catch (error) {
     logger.error('SP call status error', { error: error.message });
+    res.status(500).send('Error');
+  }
+});
+
+// notifyHuman voice_call webhook — speaks the content registered by
+// notificationChannel.js's registerCallContent(), then hangs up. No DTMF
+// gather here; notifyHuman calls are wake-up/informational, not accept/
+// decline prompts (those stay on dispatch.js's existing sp-call webhook).
+router.post('/notify-call/:token', async (req, res) => {
+  try {
+    const { token } = req.params;
+    const telephony = getTelephonyProvider();
+
+    const result = await db.query(
+      `SELECT body, dtmf_prompt FROM notify_call_content WHERE token = $1 AND expires_at > NOW()`,
+      [token],
+    );
+
+    if (result.rows.length === 0) {
+      const response = telephony.generateCallResponse([
+        { type: 'say', language: 'de', text: 'Diese Benachrichtigung ist nicht mehr gültig.' },
+        { type: 'hangup' },
+      ]);
+      return res.type('text/xml').send(response);
+    }
+
+    const { body, dtmf_prompt: dtmfPrompt } = result.rows[0];
+    const actions = [{ type: 'say', language: 'de', text: body }];
+    if (dtmfPrompt) {
+      actions.push({ type: 'pause', seconds: 1 }, { type: 'say', language: 'de', text: dtmfPrompt });
+    }
+    actions.push({ type: 'hangup' });
+
+    res.type('text/xml').send(telephony.generateCallResponse(actions));
+  } catch (error) {
+    logger.error('notify-call webhook error', { error: error.message });
     res.status(500).send('Error');
   }
 });

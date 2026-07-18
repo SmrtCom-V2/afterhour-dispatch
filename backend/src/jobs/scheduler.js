@@ -14,6 +14,7 @@ import { getEmailProvider } from '../providers/email/index.js';
 import { getTelephonyProvider } from '../providers/telephony/index.js';
 import { config } from '../config/index.js';
 import { processExpiringTrials, sendTrialReminders } from '../services/trialConversion.js';
+import { startDispatch } from '../services/dispatch.js';
 
 /**
  * Initialize all scheduled jobs
@@ -42,6 +43,17 @@ export function initializeScheduler() {
   // Dispatch timeout check - every 5 minutes
   cron.schedule('*/5 * * * *', async () => {
     await checkDispatchTimeouts();
+  });
+
+  // External emergency pickup - every minute.
+  // The SmrtCom Voice Gateway (separate NestJS process, shares this database)
+  // marks incidents decision='emergency_dispatch' when a decision-card 🔴 is
+  // pressed, the 15-min fail-safe fires, or the voice AI detects a confirmed
+  // emergency — but it deliberately does NOT reimplement the SP dispatch loop.
+  // Without this job those rows are written and never acted on: no SP call,
+  // no SMS, silence. This job is the missing pickup.
+  cron.schedule('* * * * *', async () => {
+    await pickupExternalEmergencyDispatches();
   });
 
   // Trial conversion - 12:01 AM daily (process expired trials)
@@ -188,6 +200,77 @@ async function sendReportReminders() {
     }
   } catch (error) {
     logger.error('Report reminder job failed', { error: error.message });
+  }
+}
+
+/**
+ * Pick up emergency incidents that were marked for dispatch by an external
+ * process (SmrtCom Voice Gateway) and run them through the existing SP
+ * dispatch loop.
+ *
+ * Selection rules, and why each exists:
+ * - decision='emergency_dispatch' + no dispatch_attempt rows: the incident
+ *   was marked for dispatch but nobody ever started the SP loop.
+ * - status IN ('open','escalated_to_fm'): 'open' = created directly by the
+ *   Voice Gateway (call_id IS NULL); 'escalated_to_fm' = a phone-intake
+ *   incident that went the "unclear" route and was later decided 🔴 via the
+ *   decision card or its fail-safe.
+ * - call_id IS NULL OR decision_at older than 90s: callFlow.js dispatches its
+ *   own emergencies in-process — give it 90 seconds to create its first
+ *   dispatch_attempt before treating the row as orphaned. (If the app crashed
+ *   mid-dispatch, this job picks the incident up — a resilience win, not a
+ *   duplicate: the NOT EXISTS check keeps us out of anything already started.)
+ * - decision_at within the last 60 minutes: never surprise-dispatch stale
+ *   rows from before this job existed; a dispatch an hour late is wrong anyway
+ *   and needs a human, not an automatic SP call.
+ */
+const inFlightPickups = new Set();
+
+async function pickupExternalEmergencyDispatches() {
+  try {
+    const result = await db.query(
+      `SELECT i.id, i.issue_category
+       FROM incident i
+       WHERE i.decision = 'emergency_dispatch'
+         AND i.status IN ('open', 'escalated_to_fm')
+         AND i.decision_at > NOW() - INTERVAL '60 minutes'
+         AND (i.call_id IS NULL OR i.decision_at < NOW() - INTERVAL '90 seconds')
+         AND NOT EXISTS (SELECT 1 FROM dispatch_attempt da WHERE da.incident_id = i.id)`
+    );
+
+    for (const incident of result.rows) {
+      if (inFlightPickups.has(incident.id)) continue;
+      inFlightPickups.add(incident.id);
+
+      // Same mapping as voiceai's determineRequiredTrade (kept in sync by hand;
+      // it lives on a provider class we don't want to instantiate here).
+      const tradeMapping = {
+        water_leak: 'plumber',
+        fire: 'general',
+        smoke: 'general',
+        gas_smell: 'general',
+        total_power_outage: 'electrician',
+        lockout: 'locksmith',
+        other: 'general',
+      };
+      const requiredTrade = tradeMapping[incident.issue_category] || 'general';
+
+      logger.info('Picking up external emergency incident for dispatch', {
+        incidentId: incident.id,
+        requiredTrade,
+      });
+
+      startDispatch(incident.id, requiredTrade)
+        .catch((err) =>
+          logger.error('External pickup dispatch failed', {
+            incidentId: incident.id,
+            error: err.message,
+          })
+        )
+        .finally(() => inFlightPickups.delete(incident.id));
+    }
+  } catch (error) {
+    logger.error('External emergency pickup job failed', { error: error.message });
   }
 }
 
