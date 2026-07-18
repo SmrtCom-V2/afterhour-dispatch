@@ -22,6 +22,9 @@ import { Employees } from './pages/Employees';
 import { Settings } from './pages/Settings';
 import { SpReportSubmit } from './pages/SpReportSubmit';
 import { Cockpit } from './pages/Cockpit';
+import { Impressum } from './pages/legal/Impressum';
+import { Datenschutz } from './pages/legal/Datenschutz';
+import { Terms } from './pages/legal/Terms';
 import { AdminDashboard } from './pages/AdminDashboard';
 import { SaAuthProvider, useSaAuth } from './sa/SaAuthContext';
 import { SaLayout } from './sa/SaLayout';
@@ -122,6 +125,9 @@ function AppRoutes() {
       <Route path="/verify-email" element={<VerifyEmail />} />
       <Route path="/report/:token" element={<SpReportSubmit />} />
       <Route path="/cockpit/:token" element={<Cockpit />} />
+      <Route path="/impressum" element={<Impressum />} />
+      <Route path="/privacy" element={<Datenschutz />} />
+      <Route path="/terms" element={<Terms />} />
       <Route path="/" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
       <Route path="/incidents" element={<ProtectedRoute><Incidents /></ProtectedRoute>} />
       <Route path="/incidents/:id" element={<ProtectedRoute><IncidentDetail /></ProtectedRoute>} />

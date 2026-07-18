@@ -112,6 +112,17 @@ export function Login() {
         }}>
           {t('afterHoursEmergencyDispatch')}
         </p>
+
+        <p style={{
+          marginTop: 16,
+          textAlign: 'center',
+          fontSize: 12,
+          color: 'var(--color-text-muted)'
+        }}>
+          <Link to="/impressum" style={{ color: 'inherit', marginRight: 12 }}>Impressum</Link>
+          <Link to="/privacy" style={{ color: 'inherit', marginRight: 12 }}>Datenschutz</Link>
+          <Link to="/terms" style={{ color: 'inherit' }}>AGB</Link>
+        </p>
       </div>
     </div>
   );

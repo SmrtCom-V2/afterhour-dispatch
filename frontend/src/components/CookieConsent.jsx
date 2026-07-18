@@ -190,9 +190,9 @@ export function CookieConsent() {
         )}
 
         <div className="cookie-consent-footer">
-          <a href="/privacy-policy" target="_blank" rel="noopener noreferrer">Privacy Policy</a>
+          <a href="/privacy" target="_blank" rel="noopener noreferrer">Privacy Policy</a>
           <span className="cookie-footer-divider">|</span>
-          <a href="/cookie-policy" target="_blank" rel="noopener noreferrer">Cookie Policy</a>
+          <a href="/impressum" target="_blank" rel="noopener noreferrer">Impressum</a>
         </div>
       </div>
     </div>
