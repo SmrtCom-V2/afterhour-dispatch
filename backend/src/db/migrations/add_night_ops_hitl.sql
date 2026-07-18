@@ -39,11 +39,16 @@ CREATE TABLE IF NOT EXISTS wakeup_attempt (
   phone VARCHAR(20),
   stage VARCHAR(20) NOT NULL CHECK (stage IN ('t0', 't2', 't5_backup', 't10_failsafe')),
   channel VARCHAR(20) NOT NULL CHECK (channel IN ('voice_call', 'sms', 'push')),
-  result VARCHAR(20),
+  result VARCHAR(40),
   provider_message_id VARCHAR(255),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_wakeup_attempt_incident ON wakeup_attempt(incident_id);
+-- Widen in case the table already exists from an earlier deploy of this
+-- migration (CREATE TABLE IF NOT EXISTS won't retroactively widen a column) —
+-- 'no_recipient_configured' (24 chars) overflowed the original VARCHAR(20),
+-- found live while testing the fail-safe drill.
+ALTER TABLE wakeup_attempt ALTER COLUMN result TYPE VARCHAR(40);
 
 -- 4. on_call_schedule: add role + staffing-mode columns (D3/D5 — reuse existing
 -- weekly-slot table rather than building a parallel one; a slot becomes

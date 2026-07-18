@@ -195,7 +195,7 @@ async function resolveOnCallPerson(buildingId, role) {
          (ocs.start_time <= ocs.end_time AND $4::time BETWEEN ocs.start_time AND ocs.end_time)
          OR (ocs.start_time > ocs.end_time AND ($4::time >= ocs.start_time OR $4::time <= ocs.end_time))
        )
-     ORDER BY ocs.priority
+     ORDER BY ocs.priority, ocs.updated_at DESC
      LIMIT 1`,
     [buildingId, role, dayOfWeek, currentTime],
   );
