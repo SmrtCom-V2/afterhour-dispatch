@@ -92,6 +92,18 @@ const limiter = rateLimit({
 });
 app.use('/api/', limiter);
 
+// Stricter limiter for credential/account-abuse endpoints (login,
+// password reset, registration/email-check) — the shared limiter above
+// is sized for normal dashboard traffic and far too loose to stop
+// brute-forcing or email enumeration on these specifically.
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: config.nodeEnv === 'development' ? 1000 : 10,
+  message: { error: 'Too many attempts, please try again later' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 // Stripe webhook (needs raw body - must be before express.json())
 app.use('/api/stripe-webhook', stripeWebhookRoutes);
 
@@ -113,6 +125,9 @@ app.get('/health', async (req, res) => {
 });
 
 // API Routes
+app.use('/api/auth/login', authLimiter);
+app.use('/api/password-reset', authLimiter);
+app.use('/api/register', authLimiter);
 app.use('/api/auth', authRoutes);
 // Core product routes — require an active (trial or paid) subscription.
 // Billing/settings/auth/webhooks/cockpit/sp-report stay exempt: a blocked
