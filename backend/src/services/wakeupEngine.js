@@ -17,6 +17,7 @@ import { logger } from '../utils/logger.js';
 import { notifyHuman } from './notificationChannel.js';
 import { startDispatch } from './dispatch.js';
 import { determineRequiredTrade } from './tradeMapping.js';
+import { sendOpsAlert } from '../utils/opsAlert.js';
 
 const STAGE_DELAY_MINUTES = { t0: 0, t2: 2, t5_backup: 5, t10_failsafe: 10 };
 
@@ -36,12 +37,17 @@ export async function runWakeupTick() {
     );
 
     for (const incident of incidents.rows) {
-      await processIncidentWakeup(incident).catch((err) =>
-        logger.error('Wake-up tick failed for incident', { incidentId: incident.id, error: err.message }),
-      );
+      await processIncidentWakeup(incident).catch((err) => {
+        logger.error('Wake-up tick failed for incident', { incidentId: incident.id, error: err.message });
+        sendOpsAlert(
+          `wakeup_incident_${incident.id}`,
+          `Wake-up failed for an active incident (${incident.id}): ${err.message}. On-call may not have been notified.`
+        );
+      });
     }
   } catch (error) {
     logger.error('runWakeupTick failed', { error: error.message });
+    sendOpsAlert('wakeup_tick_failed', `Wake-up engine tick failed entirely: ${error.message}`);
   }
 }
 
@@ -149,7 +155,7 @@ async function fireFailsafe(incident) {
       recipient: { name: person.name, phone: person.phone },
       purpose: 'wakeup',
       content: { title: 'Auto-Dispatch', body: `Niemand hat reagiert — Dienstleister wurde automatisch alarmiert. Vorfall ${incident.id}.` },
-      channels: ['sms'],
+      channels: ['voice_call', 'sms'], // SMS-only fails silently: this Twilio number has no SMS capability
       correlation: { incidentId: incident.id, wakeupStage: 't10_failsafe' },
     }).catch((err) => logger.error('Failsafe notify failed', { error: err.message }));
   }

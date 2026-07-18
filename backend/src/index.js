@@ -17,6 +17,7 @@ import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 import { authenticateToken } from './middleware/auth.js';
 import { requireActiveSubscription } from './middleware/requireActiveSubscription.js';
 import { initializeScheduler } from './jobs/scheduler.js';
+import { sendOpsAlert } from './utils/opsAlert.js';
 
 // Routes
 import authRoutes from './routes/auth.js';
@@ -222,6 +223,22 @@ process.on('SIGTERM', async () => {
   logger.info('SIGTERM received, shutting down gracefully');
   await db.end();
   process.exit(0);
+});
+
+// Crash alerting — without this, a crash at 3am is silent until a
+// customer complains. pm2 restarts the process either way; this just
+// makes sure a human finds out it happened.
+process.on('uncaughtException', (error) => {
+  logger.error('Uncaught exception', { error: error.message, stack: error.stack });
+  sendOpsAlert('uncaught_exception', `Backend crashed: ${error.message}`).finally(() => {
+    process.exit(1);
+  });
+});
+
+process.on('unhandledRejection', (reason) => {
+  const message = reason instanceof Error ? reason.message : String(reason);
+  logger.error('Unhandled promise rejection', { error: message });
+  sendOpsAlert('unhandled_rejection', `Unhandled rejection: ${message}`);
 });
 
 process.on('SIGINT', async () => {
