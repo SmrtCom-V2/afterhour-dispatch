@@ -186,45 +186,42 @@ export function Employees() {
 
   const loadData = async () => {
     try {
-      const [empData, schedData, onCallData] = await Promise.all([
+      // Real rotation data from on_call_schedule (one_time primary rows) —
+      // previously this page FABRICATED a round-robin in the browser and
+      // never persisted assignments, so the calendar showed people who were
+      // not actually on call. The wake-up engine reads the same table these
+      // endpoints write, so what this calendar shows is now what happens
+      // at 3am.
+      const rangeWeeks = generateWeeks(-4, 24);
+      const from = rangeWeeks[0].start;
+      const to = rangeWeeks[rangeWeeks.length - 1].end;
+
+      const [empData, schedData, onCallData, weekAssignments] = await Promise.all([
         api.getEmployees(),
         api.getOnCallSchedules(),
         api.getCurrentOnCall(),
+        api.getWeekAssignments(from, to),
       ]);
       setEmployees(empData || []);
       setSchedules(schedData || []);
       setCurrentOnCall(onCallData);
-      buildRotationsFromSchedules(schedData || [], empData || []);
+
+      const rotationMap = {};
+      for (const a of weekAssignments || []) {
+        rotationMap[a.weekStart] = {
+          employeeId: a.employeeId,
+          employeeName: a.employeeName,
+          employeePhone: a.employeePhone,
+          usePhysicalPhone: false,
+          notes: a.notes || '',
+        };
+      }
+      setRotations(rotationMap);
     } catch (err) {
       console.error('Failed to load data:', err);
     } finally {
       setLoading(false);
     }
-  };
-
-  const buildRotationsFromSchedules = (scheds, emps) => {
-    // Build rotation assignments - in production this would come from a rotation_assignments table
-    const rotationMap = {};
-
-    // For demo, assign first few employees in rotation
-    const onCallEmps = emps.filter(e => e.can_be_oncall && e.is_active);
-    if (onCallEmps.length > 0) {
-      const allWeeks = generateWeeks(-4, 20); // Get past and future weeks
-      allWeeks.forEach((week, idx) => {
-        if (onCallEmps.length > 0) {
-          const emp = onCallEmps[idx % onCallEmps.length];
-          rotationMap[week.start] = {
-            employeeId: emp.id,
-            employeeName: emp.name,
-            employeePhone: emp.phone,
-            usePhysicalPhone: false,
-            notes: '',
-          };
-        }
-      });
-    }
-
-    setRotations(rotationMap);
   };
 
   // Stats
@@ -320,29 +317,13 @@ export function Employees() {
   const handleSaveAssignment = async () => {
     setSaving(true);
     try {
-      const newRotations = { ...rotations };
-
-      if (!selectedAssignee) {
-        // Clear assignment
-        delete newRotations[selectedWeek.start];
-      } else {
-        const emp = employees.find(e => e.id === selectedAssignee);
-        if (emp) {
-          newRotations[selectedWeek.start] = {
-            employeeId: emp.id,
-            employeeName: emp.name,
-            employeePhone: emp.phone,
-            usePhysicalPhone,
-            notes: assignmentNotes,
-          };
-        }
-      }
-
-      setRotations(newRotations);
+      await api.saveWeekAssignment({
+        week_start: selectedWeek.start,
+        fm_employee_id: selectedAssignee || null,
+        notes: assignmentNotes,
+      });
       setShowAssignModal(false);
-
-      // In production, save to API:
-      // await api.saveRotationAssignment({ weekStart: selectedWeek.start, employeeId: selectedAssignee, usePhysicalPhone, notes: assignmentNotes });
+      await loadData();
     } catch (err) {
       alert('Failed to save assignment: ' + err.message);
     } finally {

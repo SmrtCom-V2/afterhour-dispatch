@@ -324,6 +324,17 @@ class ApiClient {
     });
   }
 
+  async getWeekAssignments(from, to) {
+    return this.request(`/oncall/week-assignments?from=${from}&to=${to}`);
+  }
+
+  async saveWeekAssignment(data) {
+    return this.request('/oncall/week-assignment', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
   // Settings
   async getCompanySettings() {
     return this.request('/settings/company');

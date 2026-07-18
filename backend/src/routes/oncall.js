@@ -238,6 +238,114 @@ router.delete('/:id', authenticateToken, async (req, res) => {
   }
 });
 
+// ---- Weekly rotation assignments (Night Ops D5) ----
+// A "week assignment" = one person is primary on-call 24/7 for a Mon-Sun
+// week. Stored as 7 one_time rows in on_call_schedule (one per date,
+// 00:00-23:59, role='primary') — the wake-up engine already resolves
+// one_time rows with no changes needed, and a specific-date row overrides
+// the recurring baseline. This replaces the Employees.jsx rotation
+// calendar's previous behavior of holding assignments in React state only
+// (the save call was literally commented out — nothing ever persisted).
+
+// Get week assignments in a date range, aggregated per week
+router.get('/week-assignments', authenticateToken, async (req, res) => {
+  const { from, to } = req.query;
+  if (!from || !to) return res.status(400).json({ error: 'from and to dates are required' });
+
+  try {
+    const result = await db.query(
+      `SELECT ocs.specific_date, ocs.notes,
+              ocs.fm_employee_id,
+              COALESCE(e.name, ocs.contact_name) as person_name,
+              COALESCE(e.phone, ocs.contact_phone) as person_phone
+       FROM on_call_schedule ocs
+       LEFT JOIN fm_employee e ON ocs.fm_employee_id = e.id
+       WHERE ocs.fm_company_id = $1
+         AND ocs.schedule_type = 'one_time'
+         AND ocs.role = 'primary'
+         AND ocs.is_active = true
+         AND ocs.specific_date BETWEEN $2 AND $3
+       ORDER BY ocs.specific_date`,
+      [req.user.fm_company_id, from, to]
+    );
+
+    // Aggregate consecutive dates into per-week entries, keyed by the week
+    // START in the SAME convention as Employees.jsx's getWeekStart (Sunday-
+    // based: date minus getDay()) — a Monday-keyed aggregation here silently
+    // misaligned every assignment with the calendar's week cells.
+    const assignments = {};
+    for (const row of result.rows) {
+      const d = new Date(row.specific_date);
+      const weekStart = new Date(d);
+      weekStart.setDate(d.getDate() - d.getDay());
+      const key = weekStart.toISOString().split('T')[0];
+      if (!assignments[key]) {
+        assignments[key] = {
+          weekStart: key,
+          employeeId: row.fm_employee_id,
+          employeeName: row.person_name,
+          employeePhone: row.person_phone,
+          notes: row.notes || '',
+          days: 0,
+        };
+      }
+      assignments[key].days += 1;
+    }
+
+    res.json(Object.values(assignments));
+  } catch (error) {
+    console.error('Error fetching week assignments:', error);
+    res.status(500).json({ error: 'Failed to fetch week assignments' });
+  }
+});
+
+// Set (or clear) the primary on-call person for a whole week
+router.post('/week-assignment', authenticateToken, async (req, res) => {
+  const { week_start, fm_employee_id, notes } = req.body;
+  if (!week_start || !/^\d{4}-\d{2}-\d{2}$/.test(week_start)) {
+    return res.status(400).json({ error: 'week_start (YYYY-MM-DD, a Monday) is required' });
+  }
+
+  try {
+    const saved = await db.transaction(async (client) => {
+      // Clear any existing one_time primary rows for those 7 dates first —
+      // prevents the duplicate-rows-same-priority ambiguity that misrouted
+      // a wake-up call during the July 18 live drill.
+      await client.query(
+        `DELETE FROM on_call_schedule
+         WHERE fm_company_id = $1
+           AND schedule_type = 'one_time'
+           AND role = 'primary'
+           AND specific_date >= $2::date
+           AND specific_date < $2::date + INTERVAL '7 days'`,
+        [req.user.fm_company_id, week_start]
+      );
+
+      if (!fm_employee_id) return []; // cleared
+
+      const rows = [];
+      for (let i = 0; i < 7; i++) {
+        const result = await client.query(
+          `INSERT INTO on_call_schedule (
+             fm_company_id, fm_employee_id, schedule_type, specific_date,
+             start_time, end_time, is_active, priority, role, staffing_mode, notes
+           )
+           VALUES ($1, $2, 'one_time', $3::date + ($4 || ' days')::interval, '00:00:00', '23:59:59', true, 1, 'primary', 'pm_employee', $5)
+           RETURNING id, specific_date`,
+          [req.user.fm_company_id, fm_employee_id, week_start, String(i), notes || null]
+        );
+        rows.push(result.rows[0]);
+      }
+      return rows;
+    });
+
+    res.json({ success: true, daysWritten: saved.length });
+  } catch (error) {
+    console.error('Error saving week assignment:', error);
+    res.status(500).json({ error: 'Failed to save week assignment' });
+  }
+});
+
 // Bulk create/update schedules for an employee
 router.post('/bulk', authenticateToken, async (req, res) => {
   const { fm_employee_id, schedules } = req.body;
