@@ -275,9 +275,11 @@ router.get('/week-assignments', authenticateToken, async (req, res) => {
     // misaligned every assignment with the calendar's week cells.
     const assignments = {};
     for (const row of result.rows) {
-      const d = new Date(row.specific_date);
-      const weekStart = new Date(d);
-      weekStart.setDate(d.getDate() - d.getDay());
+      // specific_date comes back as a Date from pg; use UTC parts since the
+      // column is a plain DATE with no timezone (avoids server-TZ-dependent
+      // drift if this process is ever not running in UTC).
+      const d = row.specific_date;
+      const weekStart = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - d.getUTCDay()));
       const key = weekStart.toISOString().split('T')[0];
       if (!assignments[key]) {
         assignments[key] = {

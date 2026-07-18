@@ -92,6 +92,14 @@ const getWeekEnd = (date) => {
   return new Date(start.getTime() + 6 * 24 * 60 * 60 * 1000);
 };
 
+// Local-date YYYY-MM-DD, unlike toISOString() which shifts to UTC and can roll the date back a day
+const toDateKey = (date) => {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+};
+
 const formatDate = (date, language = 'en') => {
   const locale = language === 'de' ? 'de-DE' : 'en-US';
   return new Date(date).toLocaleDateString(locale, { month: 'short', day: 'numeric' });
@@ -132,8 +140,8 @@ const generateWeeks = (startOffset = 0, numWeeks = 12, language = 'en') => {
     const start = new Date(offsetStart.getTime() + i * 7 * 24 * 60 * 60 * 1000);
     const end = getWeekEnd(start);
     weeks.push({
-      start: start.toISOString().split('T')[0],
-      end: end.toISOString().split('T')[0],
+      start: toDateKey(start),
+      end: toDateKey(end),
       startDate: start,
       endDate: end,
       label: `${formatDate(start, language)} - ${formatDate(end, language)}`,
