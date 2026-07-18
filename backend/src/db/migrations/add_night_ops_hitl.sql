@@ -89,5 +89,21 @@ CREATE TABLE IF NOT EXISTS notify_call_content (
 );
 CREATE INDEX IF NOT EXISTS idx_notify_call_content_expires ON notify_call_content(expires_at);
 
+-- 6. morning_report: fix a pre-existing bug (unrelated to Night Ops, found
+-- while testing the new handoff section) — generateMorningReport's
+-- `ON CONFLICT (pm_company_id, report_date)` had no matching unique
+-- constraint (only a plain non-unique index existed), so EVERY morning
+-- report generation has been failing with a hard Postgres error. This
+-- likely means no morning report has ever successfully sent.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'morning_report_pm_company_date_unique'
+  ) THEN
+    ALTER TABLE morning_report
+      ADD CONSTRAINT morning_report_pm_company_date_unique UNIQUE (pm_company_id, report_date);
+  END IF;
+END $$;
+
 COMMENT ON COLUMN incident.ai_urgency IS 'AI triage label at intake — human always decides regardless of this value (Night Ops D1)';
 COMMENT ON COLUMN incident.decided_via IS 'cockpit = human decision; dtmf_ack = phone keypad acknowledgement only (does not count as a decision); failsafe = T+10 auto-dispatch, nobody answered';

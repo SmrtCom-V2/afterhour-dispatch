@@ -62,8 +62,26 @@ export async function generateMorningReport(pmCompanyId, reportDate = null) {
 
   const incidents = incidentsResult.rows;
 
+  // Night Ops: incidents a human decided to stabilize-only or defer, still
+  // needing explicit office action this morning — not scoped to targetDate
+  // since a 2am decision might report against "yesterday" while the office
+  // reads this at 7am "today"; scoped to open+unhandled instead so nothing
+  // from the night silently disappears (NIGHT_OPS_MASTER_PLAN.md §4.4).
+  const handoffResult = await db.query(
+    `SELECT i.id, i.issue_category, i.issue_description, i.night_outcome, i.decided_by_person, i.created_at,
+            b.name as building_name, b.address as building_address
+     FROM incident i
+     JOIN building b ON i.building_id = b.id
+     WHERE b.pm_company_id = $1
+       AND i.night_outcome IN ('stabilized_pending_repair', 'deferred_morning')
+       AND i.created_at > NOW() - INTERVAL '18 hours'
+     ORDER BY i.created_at`,
+    [pmCompanyId],
+  );
+  const handoffIncidents = handoffResult.rows;
+
   // Generate PDF
-  const pdfBuffer = await createPDF(pmCompany, incidents, targetDate);
+  const pdfBuffer = await createPDF(pmCompany, incidents, targetDate, handoffIncidents);
 
   // Store report record
   const incidentIds = incidents.map((i) => i.id);
@@ -81,7 +99,7 @@ export async function generateMorningReport(pmCompanyId, reportDate = null) {
 /**
  * Create PDF document
  */
-async function createPDF(pmCompany, incidents, reportDate) {
+async function createPDF(pmCompany, incidents, reportDate, handoffIncidents = []) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     const doc = new PDFDocument({ margin: 50 });
@@ -99,6 +117,38 @@ async function createPDF(pmCompany, incidents, reportDate) {
     doc.text(`Report Date: ${reportDate}`);
     doc.text(`Generated: ${new Date().toISOString()}`);
     doc.moveDown();
+
+    // Night Handoff — deliberately rendered first, in red, above the
+    // regular summary. These are incidents where a human decided overnight
+    // to stabilize-only or defer rather than fully resolve, and REQUIRE
+    // office action this morning (order the repair, open a follow-up
+    // ticket) — nothing here should be treated as closed until actioned.
+    if (handoffIncidents.length > 0) {
+      doc.fontSize(14).font('Helvetica-Bold').fillColor('red');
+      doc.text(`⚠ NIGHT HANDOFF — ${handoffIncidents.length} item(s) need action`);
+      doc.fillColor('black');
+      doc.moveDown(0.3);
+      doc.fontSize(10).font('Helvetica');
+
+      for (const h of handoffIncidents) {
+        const outcomeLabel =
+          h.night_outcome === 'stabilized_pending_repair'
+            ? 'STABILIZED — repair still needed'
+            : 'DEFERRED TO MORNING';
+        const time = new Date(h.created_at).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+
+        doc.font('Helvetica-Bold').text(`${outcomeLabel} — ${h.building_name}`);
+        doc.font('Helvetica');
+        doc.text(`Address: ${h.building_address}`);
+        doc.text(`Time: ${time}  |  Issue: ${(h.issue_category || '').replace(/_/g, ' ')}`);
+        if (h.decided_by_person) doc.text(`Decided by: ${h.decided_by_person}`);
+        if (h.issue_description) doc.text(`Notes: ${h.issue_description}`);
+        doc.moveDown(0.4);
+      }
+
+      doc.moveTo(50, doc.y).lineTo(550, doc.y).stroke();
+      doc.moveDown();
+    }
 
     // Summary
     doc.fontSize(14).font('Helvetica-Bold').text('Summary');

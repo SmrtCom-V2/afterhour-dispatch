@@ -11,9 +11,11 @@ const router = express.Router();
 router.get('/', authenticateToken, async (req, res) => {
   try {
     const result = await db.query(
-      `SELECT ocs.*, e.name as employee_name, e.phone as employee_phone
+      `SELECT ocs.*,
+              COALESCE(e.name, ocs.contact_name) as employee_name,
+              COALESCE(e.phone, ocs.contact_phone) as employee_phone
        FROM on_call_schedule ocs
-       JOIN fm_employee e ON ocs.fm_employee_id = e.id
+       LEFT JOIN fm_employee e ON ocs.fm_employee_id = e.id
        WHERE ocs.fm_company_id = $1
        ORDER BY ocs.day_of_week, ocs.start_time`,
       [req.user.fm_company_id]
@@ -33,10 +35,16 @@ router.get('/current', authenticateToken, async (req, res) => {
     const currentTime = now.toTimeString().slice(0, 5);
 
     // First check for specific date override
+    // LEFT JOIN fm_employee (not inner JOIN): an FM-company-staffed slot has
+    // no fm_employee row at all — COALESCE with contact_name/contact_phone
+    // (Night Ops D3). An inner JOIN here silently dropped those slots from
+    // every on-call view, discovered while wiring the wake-up engine.
     const dateOverride = await db.query(
-      `SELECT ocs.*, e.name as employee_name, e.phone as employee_phone
+      `SELECT ocs.*,
+              COALESCE(e.name, ocs.contact_name) as employee_name,
+              COALESCE(e.phone, ocs.contact_phone) as employee_phone
        FROM on_call_schedule ocs
-       JOIN fm_employee e ON ocs.fm_employee_id = e.id
+       LEFT JOIN fm_employee e ON ocs.fm_employee_id = e.id
        WHERE ocs.fm_company_id = $1
          AND ocs.schedule_type = 'one_time'
          AND ocs.specific_date = CURRENT_DATE
@@ -53,9 +61,11 @@ router.get('/current', authenticateToken, async (req, res) => {
 
     // Then check recurring schedule
     const recurring = await db.query(
-      `SELECT ocs.*, e.name as employee_name, e.phone as employee_phone
+      `SELECT ocs.*,
+              COALESCE(e.name, ocs.contact_name) as employee_name,
+              COALESCE(e.phone, ocs.contact_phone) as employee_phone
        FROM on_call_schedule ocs
-       JOIN fm_employee e ON ocs.fm_employee_id = e.id
+       LEFT JOIN fm_employee e ON ocs.fm_employee_id = e.id
        WHERE ocs.fm_company_id = $1
          AND ocs.schedule_type = 'recurring'
          AND ocs.day_of_week = $2
@@ -107,11 +117,23 @@ router.post('/', authenticateToken, async (req, res) => {
     end_time,
     specific_date,
     priority,
-    notes
+    notes,
+    // Night Ops D3/D5: role distinguishes tonight's primary from backup;
+    // staffing_mode + contact_name/contact_phone support an outsourced FM
+    // company contact who isn't a fm_employee row at all. Defaults keep
+    // every pre-existing caller (the original Employees.jsx UI) working
+    // unchanged — a plain employee schedule is still 'primary'/'pm_employee'.
+    role,
+    staffing_mode,
+    contact_name,
+    contact_phone,
   } = req.body;
 
-  if (!fm_employee_id || !start_time || !end_time) {
-    return res.status(400).json({ error: 'Employee, start time, and end time are required' });
+  if (!fm_employee_id && !contact_phone) {
+    return res.status(400).json({ error: 'Either an employee or a contact phone number is required' });
+  }
+  if (!start_time || !end_time) {
+    return res.status(400).json({ error: 'Start time and end time are required' });
   }
 
   if (schedule_type === 'recurring' && day_of_week === undefined) {
@@ -126,20 +148,25 @@ router.post('/', authenticateToken, async (req, res) => {
     const result = await db.query(
       `INSERT INTO on_call_schedule (
          fm_company_id, fm_employee_id, schedule_type, day_of_week,
-         start_time, end_time, specific_date, priority, notes
+         start_time, end_time, specific_date, priority, notes,
+         role, staffing_mode, contact_name, contact_phone
        )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
        RETURNING *`,
       [
         req.user.fm_company_id,
-        fm_employee_id,
+        fm_employee_id || null,
         schedule_type || 'recurring',
         day_of_week,
         start_time,
         end_time,
         specific_date,
         priority || 1,
-        notes
+        notes,
+        role || 'primary',
+        staffing_mode || 'pm_employee',
+        contact_name || null,
+        contact_phone || null,
       ]
     );
     res.status(201).json(result.rows[0]);
