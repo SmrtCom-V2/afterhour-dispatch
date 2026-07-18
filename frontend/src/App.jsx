@@ -21,6 +21,7 @@ import { Reports } from './pages/Reports';
 import { Employees } from './pages/Employees';
 import { Settings } from './pages/Settings';
 import { SpReportSubmit } from './pages/SpReportSubmit';
+import { Cockpit } from './pages/Cockpit';
 import { AdminDashboard } from './pages/AdminDashboard';
 import { SaAuthProvider, useSaAuth } from './sa/SaAuthContext';
 import { SaLayout } from './sa/SaLayout';
@@ -120,6 +121,7 @@ function AppRoutes() {
       <Route path="/reset-password" element={user ? <Navigate to="/" /> : <ResetPassword />} />
       <Route path="/verify-email" element={<VerifyEmail />} />
       <Route path="/report/:token" element={<SpReportSubmit />} />
+      <Route path="/cockpit/:token" element={<Cockpit />} />
       <Route path="/" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
       <Route path="/incidents" element={<ProtectedRoute><Incidents /></ProtectedRoute>} />
       <Route path="/incidents/:id" element={<ProtectedRoute><IncidentDetail /></ProtectedRoute>} />

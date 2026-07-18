@@ -50,13 +50,27 @@ CREATE INDEX IF NOT EXISTS idx_wakeup_attempt_incident ON wakeup_attempt(inciden
 -- "tonight's primary" or "tonight's backup" via the new `role` column, and
 -- `staffing_mode` records whether this slot is filled by the PM company's own
 -- employee or an outsourced FM company contact).
+--
+-- fm_employee_id was NOT NULL (verified live July 18, broke the first real
+-- insert attempt) — that fit the old model where every on-call slot was
+-- necessarily a known fm_employee row. Night Ops D3 requires supporting a
+-- plain contact_name/contact_phone (e.g. an outsourced FM company's night
+-- dispatcher who isn't a row in fm_employee at all), so the column must
+-- allow NULL when contact_name/contact_phone are supplied instead.
 ALTER TABLE on_call_schedule
+  ALTER COLUMN fm_employee_id DROP NOT NULL,
   ADD COLUMN IF NOT EXISTS role VARCHAR(10) DEFAULT 'primary'
     CHECK (role IN ('primary', 'backup')),
   ADD COLUMN IF NOT EXISTS staffing_mode VARCHAR(20) DEFAULT 'pm_employee'
     CHECK (staffing_mode IN ('pm_employee', 'fm_company')),
   ADD COLUMN IF NOT EXISTS contact_name VARCHAR(255),
   ADD COLUMN IF NOT EXISTS contact_phone VARCHAR(20);
+
+ALTER TABLE on_call_schedule
+  DROP CONSTRAINT IF EXISTS on_call_schedule_employee_or_contact_check;
+ALTER TABLE on_call_schedule
+  ADD CONSTRAINT on_call_schedule_employee_or_contact_check
+    CHECK (fm_employee_id IS NOT NULL OR contact_phone IS NOT NULL);
 
 -- 5. notify_call_content: short-lived content store for notifyHuman's
 -- voice_call channel. Twilio's call webhook only posts CallSid/From/To —

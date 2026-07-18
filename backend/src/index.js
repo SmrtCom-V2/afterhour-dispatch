@@ -26,6 +26,7 @@ import incidentsRoutes from './routes/incidents.js';
 import reportsRoutes from './routes/reports.js';
 import spReportRoutes from './routes/spReport.js';
 import webhooksRoutes from './routes/webhooks.js';
+import cockpitRoutes from './routes/cockpit.js';
 import saAuthRoutes from './routes/saAuth.js';
 import saCompaniesRoutes from './routes/saCompanies.js';
 import saAuditLogsRoutes from './routes/saAuditLogs.js';
@@ -56,6 +57,13 @@ import gdprRoutes from './routes/gdpr.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const app = express();
+
+// Trust nginx's X-Forwarded-For (this app always runs behind the reverse
+// proxy in every real deployment). Without this, express-rate-limit throws
+// ERR_ERL_UNEXPECTED_X_FORWARDED_FOR on every request instead of rate-limiting
+// by real client IP — discovered live July 18 once external Twilio webhook
+// traffic first hit this server. `1` = trust exactly one hop (nginx).
+app.set('trust proxy', 1);
 
 // Security middleware
 app.use(helmet({
@@ -112,6 +120,7 @@ app.use('/api/incidents', incidentsRoutes);
 app.use('/api/reports', reportsRoutes);
 app.use('/api/sp-report', spReportRoutes);
 app.use('/api/webhooks', webhooksRoutes);
+app.use('/api/cockpit', cockpitRoutes);
 app.use('/api/employees', employeesRoutes);
 app.use('/api/oncall', oncallRoutes);
 app.use('/api/settings', settingsRoutes);

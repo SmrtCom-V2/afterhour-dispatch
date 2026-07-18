@@ -18,15 +18,22 @@ import { logger } from '../utils/logger.js';
 import { getTelephonyProvider } from '../providers/telephony/index.js';
 import { getEmailProvider } from '../providers/email/index.js';
 import { config } from '../config/index.js';
+import { notifyHuman } from './notificationChannel.js';
 
 const CALL_TIMEOUT_MS = config.app.spCallTimeoutSeconds * 1000; // 2 minutes
 const SMS_TIMEOUT_MS = config.app.spSmsTimeoutSeconds * 1000; // 10 minutes
 
 /**
- * Start dispatch for an incident
+ * Start dispatch for an incident.
+ *
+ * @param {string|null} preferredSpId - when the Decision Cockpit's "send
+ * company" override picked a specific SP (not the system's priority-1
+ * suggestion), that SP is moved to the front of the call order. Existing
+ * callers (the External Emergency Pickup job, T+10 fail-safe) don't pass
+ * this and get the original priority-order behavior unchanged.
  */
-export async function startDispatch(incidentId, requiredTrade) {
-  logger.info('Starting dispatch', { incidentId, requiredTrade });
+export async function startDispatch(incidentId, requiredTrade, preferredSpId = null) {
+  logger.info('Starting dispatch', { incidentId, requiredTrade, preferredSpId });
 
   // Get incident with building info
   const incidentResult = await db.query(
@@ -86,6 +93,14 @@ export async function startDispatch(incidentId, requiredTrade) {
     }
 
     spsResult.rows = generalSpsResult.rows;
+  }
+
+  if (preferredSpId) {
+    const idx = spsResult.rows.findIndex((sp) => sp.id === preferredSpId);
+    if (idx > 0) {
+      const [preferred] = spsResult.rows.splice(idx, 1);
+      spsResult.rows.unshift(preferred);
+    }
   }
 
   // Update incident status
@@ -315,28 +330,42 @@ async function markNoSpAvailable(incident) {
 }
 
 /**
- * Escalate to FM on-call via SMS
+ * All SPs exhausted (or none configured) — ring the human back, don't just
+ * text. Night Ops §4.4: "ball returns to decider (ring + SMS), never a dead
+ * end." Prefers the actual decider who chose "send company" in the cockpit
+ * (most recent cockpit_token for this incident) over the generic FM on-call
+ * fallback number, since that's the specific person waiting to hear back.
  */
 async function escalateToFM(incident) {
-  if (!incident.fm_oncall_phone) {
-    logger.error('No FM on-call phone configured', { incidentId: incident.id });
+  const decider = await db.query(
+    `SELECT phone, person_name FROM cockpit_token WHERE incident_id = $1 AND used_at IS NOT NULL
+     ORDER BY created_at DESC LIMIT 1`,
+    [incident.id],
+  );
+
+  const recipient =
+    decider.rows.length > 0
+      ? { phone: decider.rows[0].phone, name: decider.rows[0].person_name }
+      : incident.fm_oncall_phone
+        ? { phone: incident.fm_oncall_phone, name: incident.fm_oncall_name }
+        : null;
+
+  if (!recipient) {
+    logger.error('No decider or FM on-call phone available for all-SPs-failed notification', { incidentId: incident.id });
     return;
   }
 
-  const telephony = getTelephonyProvider();
+  const body =
+    `Kein Dienstleister verfügbar für: ${incident.issue_category || 'Vorfall'} bei ${incident.building_address || incident.building_name || 'unbekannt'}. ` +
+    `Bitte manuell übernehmen. Vorfall ${incident.id}.`;
 
-  const message = `URGENT: After-hours incident requires attention.
-
-Building: ${incident.building_name || 'Unknown'}
-Address: ${incident.building_address || 'Unknown'}
-Issue: ${incident.issue_category || 'Unknown'}
-Description: ${incident.issue_description || 'No description'}
-
-No service provider was available. Please handle manually.
-
-Incident ID: ${incident.id}`;
-
-  await telephony.sendSms(incident.fm_oncall_phone, message);
+  await notifyHuman({
+    recipient,
+    purpose: 'fm_escalation',
+    content: { title: 'Kein Dienstleister verfügbar', body },
+    channels: ['voice_call', 'sms'],
+    correlation: { incidentId: incident.id },
+  });
 
   await db.query(
     `UPDATE incident SET status = 'escalated_to_fm' WHERE id = $1`,

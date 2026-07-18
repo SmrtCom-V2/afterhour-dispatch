@@ -15,6 +15,7 @@ import { getTelephonyProvider } from '../providers/telephony/index.js';
 import { config } from '../config/index.js';
 import { processExpiringTrials, sendTrialReminders } from '../services/trialConversion.js';
 import { startDispatch } from '../services/dispatch.js';
+import { runWakeupTick } from '../services/wakeupEngine.js';
 
 /**
  * Initialize all scheduled jobs
@@ -54,6 +55,17 @@ export function initializeScheduler() {
   // no SMS, silence. This job is the missing pickup.
   cron.schedule('* * * * *', async () => {
     await pickupExternalEmergencyDispatches();
+  });
+
+  // Night Ops wake-up engine - every minute.
+  // Night Ops D1: the AI never dispatches — it creates incidents with
+  // ai_urgency set and decision='pending'. This job rings/SMSes the on-call
+  // human (T+0, re-ring T+2, backup T+5, fail-safe auto-dispatch T+10) until
+  // a human decides in the Decision Cockpit. See NIGHT_OPS_MASTER_PLAN.md §4.2.
+  // Node-cron's 1-minute floor means T+2/5/10 land within ~1 min of their
+  // target, which is fine for human-response windows measured in minutes.
+  cron.schedule('* * * * *', async () => {
+    await runWakeupTick();
   });
 
   // Trial conversion - 12:01 AM daily (process expired trials)
