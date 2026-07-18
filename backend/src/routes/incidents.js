@@ -228,8 +228,15 @@ router.put('/:id/close', async (req, res) => {
     const result = await db.query(
       `UPDATE incident SET status = 'closed'
        WHERE id = $1
+         AND id IN (
+           SELECT i.id FROM incident i
+           LEFT JOIN building b ON i.building_id = b.id
+           LEFT JOIN pm_company pm ON b.pm_company_id = pm.id
+           LEFT JOIN call c ON i.call_id = c.id
+           WHERE i.id = $1 AND (pm.fm_company_id = $2 OR c.fm_company_id = $2)
+         )
        RETURNING *`,
-      [id]
+      [id, req.user.fm_company_id]
     );
 
     if (result.rows.length === 0) {
