@@ -411,10 +411,23 @@ router.delete('/:id/service-providers/:spId', async (req, res) => {
   try {
     const { id, spId } = req.params;
 
-    await db.query(
-      'DELETE FROM building_service_provider WHERE building_id = $1 AND service_provider_id = $2',
-      [id, spId]
+    // Scope folded into the DELETE itself (not a separate check-then-write)
+    // so there's no gap where an unscoped query could ever run — building_id
+    // must belong to this FM company via pm_company for any row to match.
+    const result = await db.query(
+      `DELETE FROM building_service_provider
+       WHERE building_id = $1 AND service_provider_id = $2
+         AND building_id IN (
+           SELECT b.id FROM building b
+           JOIN pm_company pm ON b.pm_company_id = pm.id
+           WHERE pm.fm_company_id = $3
+         )`,
+      [id, spId, req.user.fm_company_id]
     );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'Assignment not found' });
+    }
 
     logger.info('SP removed from building', { buildingId: id, serviceProviderId: spId });
 

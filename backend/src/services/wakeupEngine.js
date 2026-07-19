@@ -85,7 +85,27 @@ async function processIncidentWakeup(incident) {
   }
 }
 
+/**
+ * Atomically claims (incident_id, stage) so overlapping cron ticks can't
+ * both dial/text the same person for the same stage — see
+ * add_wakeup_stage_claim.sql for why this can't just be a UNIQUE constraint
+ * on wakeup_attempt (that table is written per-channel, after the fact).
+ * Returns true if this call won the claim.
+ */
+async function claimStage(incidentId, stage) {
+  const result = await db.query(
+    `INSERT INTO wakeup_stage_claim (incident_id, stage) VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING incident_id`,
+    [incidentId, stage],
+  );
+  return result.rowCount > 0;
+}
+
 async function wakeStage(incident, stage, role) {
+  if (!(await claimStage(incident.id, stage))) {
+    logger.info(`Incident ${incident.id}: stage ${stage} already claimed by another tick, skipping`);
+    return;
+  }
+
   const person = await resolveOnCallPerson(incident.building_id, role);
 
   if (!person) {
@@ -105,6 +125,15 @@ async function wakeStage(incident, stage, role) {
     return;
   }
 
+  // Re-check right before dialing — the incident may have been decided in
+  // the cockpit in the seconds between this tick's fetch and now. Without
+  // this, someone can get called/texted about a ticket they already closed.
+  const current = await db.query('SELECT decision FROM incident WHERE id = $1', [incident.id]);
+  if (current.rows[0]?.decision !== 'pending') {
+    logger.info(`Incident ${incident.id}: decided before stage ${stage} fired, skipping notify`);
+    return;
+  }
+
   const token = await createCockpitToken(incident.id, role, person);
   const cockpitUrl = `${process.env.APP_URL || 'http://localhost:3005'}/cockpit/${token}`;
 
@@ -117,7 +146,11 @@ async function wakeStage(incident, stage, role) {
     purpose: 'wakeup',
     content: {
       title: urgencyLabel,
-      body: `${urgencyLabel}: ${categoryLabel}. Details und Entscheidung: ${cockpitUrl}`,
+      // Spoken by Twilio TTS on voice calls — must never contain the raw URL,
+      // Twilio reads it character-by-character which is unusable on a call.
+      // SMS/push get the link separately via actionUrl.
+      body: `${urgencyLabel}: ${categoryLabel}. Bitte öffnen Sie die After Hour Dispatch App für Details und Entscheidung.`,
+      actionUrl: cockpitUrl,
     },
     channels: ['voice_call', 'sms'],
     correlation: { incidentId: incident.id, wakeupStage: stage },
@@ -129,12 +162,20 @@ async function wakeStage(incident, stage, role) {
 async function fireFailsafe(incident) {
   const requiredTrade = determineRequiredTrade(incident.issue_category);
 
-  await db.query(
+  // Atomic race-breaker: if an overlapping tick already flipped this
+  // incident's decision (or a human decided in the cockpit in the same
+  // instant), this UPDATE affects 0 rows and we must not proceed to
+  // dispatch/notify a second time.
+  const updateResult = await db.query(
     `UPDATE incident
      SET decision = 'emergency_dispatch', decision_at = NOW(), decided_by_person = 'failsafe', decided_via = 'failsafe'
      WHERE id = $1 AND decision = 'pending'`,
     [incident.id],
   );
+  if (updateResult.rowCount === 0) {
+    logger.info(`Incident ${incident.id}: fail-safe lost the race (already decided), skipping`);
+    return;
+  }
 
   await db.query(
     `INSERT INTO incident_timeline (incident_id, event_type, event_data)

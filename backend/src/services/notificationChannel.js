@@ -19,6 +19,7 @@ import { randomUUID } from 'crypto';
 import { db } from '../db/index.js';
 import { logger } from '../utils/logger.js';
 import { getTelephonyProvider } from '../providers/telephony/index.js';
+import { sendPushToAdmin } from './pushNotification.js';
 
 /**
  * @param {object} params
@@ -63,9 +64,25 @@ export async function notifyHuman({ recipient, purpose, content, channels, corre
       }
 
       if (channel === 'push') {
-        // No adapter yet — declared for forward-compatibility with the
-        // SmrtCom worker app. Falls through to the next channel in the list.
-        logger.info('notifyHuman: push channel requested but no adapter available yet', { purpose, correlation });
+        // The on-call person is resolved by phone (fm_employee / on_call_schedule
+        // contact_phone), not by fm_admin id — so the link to "which logged-in
+        // app user gets the push" is fm_admin.phone matching that same number.
+        // No match (person isn't a registered app user, or phone unset) just
+        // falls through to the next channel — never blocks voice/SMS delivery.
+        const admin = recipient.phone
+          ? await db.query('SELECT id FROM fm_admin WHERE phone = $1', [recipient.phone])
+          : { rows: [] };
+        if (admin.rows.length > 0) {
+          const sent = await sendPushToAdmin(admin.rows[0].id, {
+            title: content.title || 'After Hour Dispatch',
+            body: content.body,
+            data: { actionUrl: content.actionUrl || '', purpose, ...correlation },
+          });
+          if (sent) {
+            await logAttempt({ recipient, purpose, channel, result: 'sent', correlation });
+            return { delivered: true, channelUsed: 'push', providerMessageId: null };
+          }
+        }
         await logAttempt({ recipient, purpose, channel, result: 'channel_not_available', correlation });
         continue;
       }

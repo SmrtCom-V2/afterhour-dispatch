@@ -97,7 +97,7 @@ router.get('/:id', async (req, res) => {
 // POST /api/service-providers - Create SP
 router.post('/', async (req, res) => {
   try {
-    const { companyName, contactName, phone, email, trade, status } = req.body;
+    const { companyName, contactName, phone, email, trade, status, usageNote, available24h, availableFrom, availableTo } = req.body;
 
     if (!companyName || !phone || !trade) {
       return res.status(400).json({ error: 'Company name, phone, and trade required' });
@@ -110,10 +110,15 @@ router.post('/', async (req, res) => {
     }
 
     const result = await db.query(
-      `INSERT INTO service_provider (fm_company_id, company_name, contact_name, phone, email, trade, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `INSERT INTO service_provider
+         (fm_company_id, company_name, contact_name, phone, email, trade, status,
+          usage_note, available_24h, available_from, available_to)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
        RETURNING *`,
-      [req.user.fm_company_id, companyName, contactName, phone, email, trade, status || 'active']
+      [
+        req.user.fm_company_id, companyName, contactName, phone, email, trade, status || 'active',
+        usageNote || null, available24h !== false, availableFrom || null, availableTo || null,
+      ]
     );
 
     logger.info('Service provider created', { spId: result.rows[0].id, companyName });
@@ -129,7 +134,7 @@ router.post('/', async (req, res) => {
 router.put('/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const { companyName, contactName, phone, email, trade, status } = req.body;
+    const { companyName, contactName, phone, email, trade, status, usageNote, available24h, availableFrom, availableTo } = req.body;
 
     // Verify SP belongs to this FM
     const check = await db.query(
@@ -154,10 +159,17 @@ router.put('/:id', async (req, res) => {
          phone = COALESCE($3, phone),
          email = COALESCE($4, email),
          trade = COALESCE($5, trade),
-         status = COALESCE($6, status)
-       WHERE id = $7
+         status = COALESCE($6, status),
+         usage_note = COALESCE($7, usage_note),
+         available_24h = COALESCE($8, available_24h),
+         available_from = $9,
+         available_to = $10
+       WHERE id = $11
        RETURNING *`,
-      [companyName, contactName, phone, email, trade, status, id]
+      [
+        companyName, contactName, phone, email, trade, status,
+        usageNote, available24h, availableFrom || null, availableTo || null, id,
+      ]
     );
 
     logger.info('Service provider updated', { spId: id });

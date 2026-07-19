@@ -31,9 +31,14 @@ const SMS_TIMEOUT_MS = config.app.spSmsTimeoutSeconds * 1000; // 10 minutes
  * suggestion), that SP is moved to the front of the call order. Existing
  * callers (the External Emergency Pickup job, T+10 fail-safe) don't pass
  * this and get the original priority-order behavior unchanged.
+ * @param {string[]} excludeSpIds - SPs to skip entirely, used only by the
+ * scheduler's resumeStaleDispatch (checkDispatchTimeouts) when picking the
+ * loop back up after a process restart abandoned it mid-wait — those SPs
+ * already have a dispatch_attempt on this incident and must not be called
+ * again. Every other caller passes nothing and behavior is unchanged.
  */
-export async function startDispatch(incidentId, requiredTrade, preferredSpId = null) {
-  logger.info('Starting dispatch', { incidentId, requiredTrade, preferredSpId });
+export async function startDispatch(incidentId, requiredTrade, preferredSpId = null, excludeSpIds = []) {
+  logger.info('Starting dispatch', { incidentId, requiredTrade, preferredSpId, excludeSpIds });
 
   // Get incident with building info
   const incidentResult = await db.query(
@@ -72,8 +77,15 @@ export async function startDispatch(incidentId, requiredTrade, preferredSpId = n
     [incident.building_id, requiredTrade]
   );
 
+  if (excludeSpIds.length > 0) {
+    spsResult.rows = spsResult.rows.filter((sp) => !excludeSpIds.includes(sp.id));
+  }
+
   if (spsResult.rows.length === 0) {
-    // Try 'general' trade as fallback
+    // Try 'general' trade as fallback — also reached when excludeSpIds
+    // filtered out every trade-specific SP (a resume after all
+    // trade-specific SPs were already tried), not just when the initial
+    // query returned nothing.
     const generalSpsResult = await db.query(
       `SELECT sp.*, bsp.priority
        FROM service_provider sp
@@ -85,14 +97,16 @@ export async function startDispatch(incidentId, requiredTrade, preferredSpId = n
       [incident.building_id]
     );
 
-    if (generalSpsResult.rows.length === 0) {
-      logger.warn('No SPs available for building', { incidentId, buildingId: incident.building_id });
-      await markNoSpAvailable(incident);
-      await escalateToFM(incident);
-      return { success: false, error: 'No service providers available' };
-    }
+    spsResult.rows = excludeSpIds.length > 0
+      ? generalSpsResult.rows.filter((sp) => !excludeSpIds.includes(sp.id))
+      : generalSpsResult.rows;
+  }
 
-    spsResult.rows = generalSpsResult.rows;
+  if (spsResult.rows.length === 0) {
+    logger.warn('No SPs available for building', { incidentId, buildingId: incident.building_id, excludeSpIds });
+    await markNoSpAvailable(incident);
+    await escalateToFM(incident);
+    return { success: false, error: 'No service providers available' };
   }
 
   if (preferredSpId) {

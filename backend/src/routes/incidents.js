@@ -7,6 +7,21 @@ import { Router } from 'express';
 import { db } from '../db/index.js';
 import { authenticateToken } from '../middleware/auth.js';
 import { logger } from '../utils/logger.js';
+import { determineRequiredTrade } from '../services/tradeMapping.js';
+import { GuidedQuestions } from '../providers/voiceai/index.js';
+
+/**
+ * Labels raw guided_answers ({problem: "...", danger_type: "..."}) with the
+ * actual question text that was asked, in the call's language — so the app
+ * doesn't need to duplicate GuidedQuestions client-side or guess at labels.
+ */
+function labelGuidedAnswers(guidedAnswers, language) {
+  if (!guidedAnswers) return [];
+  const questions = GuidedQuestions[language] || GuidedQuestions.de;
+  return questions
+    .filter((q) => guidedAnswers[q.id] !== undefined)
+    .map((q) => ({ question: q.question, answer: guidedAnswers[q.id] }));
+}
 
 const router = Router();
 
@@ -216,6 +231,112 @@ router.get('/:id', async (req, res) => {
   } catch (error) {
     logger.error('Error fetching incident', { error: error.message });
     res.status(500).json({ error: 'Failed to fetch incident' });
+  }
+});
+
+/**
+ * GET /api/incidents/:id/mobile-detail — read-only full ticket view for the
+ * mobile app's ticket history (tapping a row in the Tickets list). Same data
+ * shape as GET /api/cockpit/:token (building access info, AI confidence,
+ * suggested/all service providers) plus a timeline, but auth-token scoped to
+ * the logged-in admin's company instead of a one-time cockpit token — this
+ * is for browsing past/current tickets after the fact, not for making a
+ * decision (that only happens via the live cockpit-token call/push link,
+ * same as the real 3am flow). No decision endpoints are exposed here.
+ */
+router.get('/:id/mobile-detail', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const incidentResult = await db.query(
+      `SELECT i.id, i.issue_category, i.issue_description, i.ai_confidence, i.ai_urgency,
+              i.tenant_name_given, i.tenant_phone_given, i.created_at, i.guided_answers,
+              i.decision, i.night_outcome, i.decided_by_person,
+              b.id as building_id, b.name as building_name, b.address as building_address,
+              b.water_shutoff_location, b.gas_shutoff_location, b.electric_shutoff_location,
+              b.key_safe_location, b.key_safe_code, b.gate_code, b.main_entrance_code,
+              b.special_access_instructions, b.janitor_name, b.janitor_phone,
+              t.name as tenant_name, t.phone as tenant_phone,
+              c.transcript, c.language, c.caller_phone
+       FROM incident i
+       LEFT JOIN building b ON i.building_id = b.id
+       LEFT JOIN pm_company pm ON b.pm_company_id = pm.id
+       LEFT JOIN tenant t ON i.tenant_id = t.id
+       LEFT JOIN call c ON i.call_id = c.id
+       WHERE i.id = $1 AND pm.fm_company_id = $2`,
+      [id, req.user.fm_company_id],
+    );
+    if (incidentResult.rows.length === 0) {
+      return res.status(404).json({ error: 'not_found' });
+    }
+    const incident = incidentResult.rows[0];
+
+    const requiredTrade = determineRequiredTrade(incident.issue_category);
+    const spList = await db.query(
+      `SELECT sp.id, sp.company_name, sp.phone, sp.trade, bsp.priority,
+              sp.usage_note, sp.available_24h, sp.available_from, sp.available_to
+       FROM service_provider sp
+       JOIN building_service_provider bsp ON sp.id = bsp.service_provider_id
+       WHERE bsp.building_id = $1 AND sp.status = 'active'
+       ORDER BY (sp.trade = $2) DESC, bsp.priority ASC`,
+      [incident.building_id, requiredTrade],
+    );
+    const suggested = spList.rows.find((sp) => sp.trade === requiredTrade) || spList.rows[0] || null;
+
+    const timeline = await db.query(
+      `SELECT event_type, event_data, created_at FROM incident_timeline
+       WHERE incident_id = $1 ORDER BY created_at ASC`,
+      [id],
+    );
+
+    const wakeups = await db.query(
+      `SELECT stage, channel, result, created_at FROM wakeup_attempt WHERE incident_id = $1 ORDER BY created_at`,
+      [id],
+    );
+
+    res.json({
+      incident: {
+        id: incident.id,
+        category: incident.issue_category,
+        description: incident.issue_description,
+        aiConfidence: incident.ai_confidence,
+        aiUrgency: incident.ai_urgency,
+        createdAt: incident.created_at,
+        decision: incident.decision,
+        nightOutcome: incident.night_outcome,
+        decidedByPerson: incident.decided_by_person,
+        transcript: incident.transcript,
+        guidedAnswers: labelGuidedAnswers(incident.guided_answers, incident.language),
+      },
+      caller: {
+        name: incident.tenant_name || incident.tenant_name_given,
+        phone: incident.tenant_phone || incident.tenant_phone_given || incident.caller_phone,
+      },
+      building: {
+        id: incident.building_id,
+        name: incident.building_name,
+        address: incident.building_address,
+        waterShutoff: incident.water_shutoff_location,
+        gasShutoff: incident.gas_shutoff_location,
+        electricShutoff: incident.electric_shutoff_location,
+        keySafeLocation: incident.key_safe_location,
+        keySafeCode: incident.key_safe_code,
+        gateCode: incident.gate_code,
+        mainEntranceCode: incident.main_entrance_code,
+        specialAccessInstructions: incident.special_access_instructions,
+        janitorName: incident.janitor_name,
+        janitorPhone: incident.janitor_phone,
+      },
+      requiredTrade,
+      suggestedCompany: suggested,
+      allCompanies: spList.rows,
+      wakeupAttempts: wakeups.rows,
+      timeline: timeline.rows,
+      alreadyDecided: incident.decision !== 'pending',
+    });
+  } catch (error) {
+    logger.error('mobile-detail GET error', { error: error.message, incidentId: req.params.id });
+    res.status(500).json({ error: 'server_error' });
   }
 });
 

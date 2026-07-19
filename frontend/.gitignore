@@ -24,3 +24,8 @@ dist-ssr
 *.sw?
 
 .vercel
+
+# Playwright auth state — contains live JWT tokens
+tests/.auth/
+test-results/
+playwright-report/

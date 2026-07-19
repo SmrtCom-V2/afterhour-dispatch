@@ -16,6 +16,7 @@ import { config } from '../config/index.js';
 import { processExpiringTrials, sendTrialReminders } from '../services/trialConversion.js';
 import { startDispatch } from '../services/dispatch.js';
 import { runWakeupTick } from '../services/wakeupEngine.js';
+import { determineRequiredTrade } from '../services/tradeMapping.js';
 
 /**
  * Initialize all scheduled jobs
@@ -286,8 +287,18 @@ async function pickupExternalEmergencyDispatches() {
   }
 }
 
+const inFlightResumes = new Set();
+
 /**
- * Check for stale dispatch attempts and handle timeouts
+ * Check for stale dispatch attempts and handle timeouts.
+ *
+ * Marking the row 'timeout' used to be the whole job — fine when the SP
+ * loop was still alive in-process to notice and move to the next SP itself.
+ * But if pm2 restarts mid-wait (deploy, crash, OOM), dispatchLoop's in-memory
+ * for-loop is gone with it: the timed-out row just sits there forever with
+ * nobody dialing the next SP or escalating. That's a real missed dispatch
+ * with zero automatic recovery — this resumes it, using the same
+ * startDispatch/escalateToFM path dispatchLoop itself would have taken.
  */
 async function checkDispatchTimeouts() {
   try {
@@ -303,9 +314,64 @@ async function checkDispatchTimeouts() {
     if (result.rows.length > 0) {
       logger.info(`Timed out ${result.rows.length} dispatch attempts`);
     }
+
+    // One resume attempt per affected incident, not per timed-out row (an
+    // incident can have both a timed-out call attempt and a timed-out SMS
+    // attempt from the same SP in one tick).
+    const incidentIds = [...new Set(result.rows.map((r) => r.incident_id))];
+    for (const incidentId of incidentIds) {
+      if (inFlightResumes.has(incidentId)) continue;
+      resumeStaleDispatch(incidentId)
+        .catch((err) => logger.error('Dispatch resume failed', { incidentId, error: err.message }))
+        .finally(() => inFlightResumes.delete(incidentId));
+      inFlightResumes.add(incidentId);
+    }
   } catch (error) {
     logger.error('Dispatch timeout check failed', { error: error.message });
   }
+}
+
+/**
+ * Picks a just-timed-out incident back up: if the incident is still
+ * genuinely mid-dispatch (status='sp_dispatched', nobody accepted, no other
+ * attempt still pending) start a fresh startDispatch excluding every SP
+ * already tried. startDispatch itself calls escalateToFM if that leaves no
+ * SPs — same terminal behavior dispatchLoop always had, just reachable
+ * again after a restart instead of dead-ending.
+ */
+async function resumeStaleDispatch(incidentId) {
+  const incidentResult = await db.query(
+    `SELECT id, status, issue_category FROM incident WHERE id = $1`,
+    [incidentId],
+  );
+  const incident = incidentResult.rows[0];
+  if (!incident || incident.status !== 'sp_dispatched') return;
+
+  const pendingResult = await db.query(
+    `SELECT 1 FROM dispatch_attempt WHERE incident_id = $1 AND response = 'pending' LIMIT 1`,
+    [incidentId],
+  );
+  if (pendingResult.rows.length > 0) return; // a live in-process loop is still waiting on this one
+
+  // A live loop transitions pending->timeout itself and immediately inserts
+  // its next attempt (milliseconds apart) — if the most recent attempt on
+  // this incident was created in roughly the last cron interval, assume a
+  // live process is mid-transition rather than actually gone, and let the
+  // next tick re-check instead of risking a double-dispatch.
+  const recentResult = await db.query(
+    `SELECT 1 FROM dispatch_attempt WHERE incident_id = $1 AND started_at > NOW() - INTERVAL '90 seconds' LIMIT 1`,
+    [incidentId],
+  );
+  if (recentResult.rows.length > 0) return;
+
+  const triedResult = await db.query(
+    `SELECT DISTINCT service_provider_id FROM dispatch_attempt WHERE incident_id = $1`,
+    [incidentId],
+  );
+  const excludeSpIds = triedResult.rows.map((r) => r.service_provider_id);
+
+  logger.warn('Resuming orphaned dispatch after restart/timeout', { incidentId, excludeSpIds });
+  await startDispatch(incidentId, determineRequiredTrade(incident.issue_category), null, excludeSpIds);
 }
 
 export default { initializeScheduler };

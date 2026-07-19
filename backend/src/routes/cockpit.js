@@ -10,10 +10,23 @@ import express from 'express';
 import { db } from '../db/index.js';
 import { logger } from '../utils/logger.js';
 import { startDispatch } from '../services/dispatch.js';
-import { notifyHuman } from '../services/notificationChannel.js';
 import { determineRequiredTrade } from '../services/tradeMapping.js';
+import { GuidedQuestions } from '../providers/voiceai/index.js';
 
 const router = express.Router();
+
+/**
+ * Labels raw guided_answers ({problem: "...", danger_type: "..."}) with the
+ * actual question text that was asked, in the call's language — so the
+ * cockpit page/app doesn't need to duplicate GuidedQuestions client-side.
+ */
+function labelGuidedAnswers(guidedAnswers, language) {
+  if (!guidedAnswers) return [];
+  const questions = GuidedQuestions[language] || GuidedQuestions.de;
+  return questions
+    .filter((q) => guidedAnswers[q.id] !== undefined)
+    .map((q) => ({ question: q.question, answer: guidedAnswers[q.id] }));
+}
 
 async function loadTokenContext(token) {
   const tokenResult = await db.query(
@@ -48,14 +61,14 @@ router.get('/:token', async (req, res) => {
 
     const incidentResult = await db.query(
       `SELECT i.id, i.issue_category, i.issue_description, i.ai_confidence, i.ai_urgency,
-              i.tenant_name_given, i.tenant_phone_given, i.created_at,
+              i.tenant_name_given, i.tenant_phone_given, i.created_at, i.guided_answers,
               i.decision, i.night_outcome, i.decided_by_person,
               b.id as building_id, b.name as building_name, b.address as building_address,
               b.water_shutoff_location, b.gas_shutoff_location, b.electric_shutoff_location,
               b.key_safe_location, b.key_safe_code, b.gate_code, b.main_entrance_code,
               b.special_access_instructions, b.janitor_name, b.janitor_phone,
               t.name as tenant_name, t.phone as tenant_phone,
-              c.transcript
+              c.transcript, c.language, c.caller_phone
        FROM incident i
        LEFT JOIN building b ON i.building_id = b.id
        LEFT JOIN tenant t ON i.tenant_id = t.id
@@ -81,7 +94,8 @@ router.get('/:token', async (req, res) => {
     // Phase 1 anti-collusion is the audit trail, not routing cleverness).
     const requiredTrade = determineRequiredTrade(incident.issue_category);
     const spList = await db.query(
-      `SELECT sp.id, sp.company_name, sp.phone, sp.trade, bsp.priority
+      `SELECT sp.id, sp.company_name, sp.phone, sp.trade, bsp.priority,
+              sp.usage_note, sp.available_24h, sp.available_from, sp.available_to
        FROM service_provider sp
        JOIN building_service_provider bsp ON sp.id = bsp.service_provider_id
        WHERE bsp.building_id = $1 AND sp.status = 'active'
@@ -109,10 +123,11 @@ router.get('/:token', async (req, res) => {
         nightOutcome: incident.night_outcome,
         decidedByPerson: incident.decided_by_person,
         transcript: incident.transcript,
+        guidedAnswers: labelGuidedAnswers(incident.guided_answers, incident.language),
       },
       caller: {
         name: incident.tenant_name || incident.tenant_name_given,
-        phone: incident.tenant_phone || incident.tenant_phone_given,
+        phone: incident.tenant_phone || incident.tenant_phone_given || incident.caller_phone,
       },
       building: {
         id: incident.building_id,
@@ -231,6 +246,11 @@ router.post('/:token/decision', async (req, res) => {
         logger.error('cockpit-triggered startDispatch failed', { incidentId: tokenRow.incident_id, error: err.message }),
       );
     }
+
+    // NOTE: defer_morning does not currently notify the original caller.
+    // This Twilio number is voice-only (no SMS capability) — an automated
+    // phone call to say "this is not an emergency" would be a worse
+    // experience than the current silence. Revisit once SMS works.
 
     res.json({ success: true, action, nightOutcome });
   } catch (error) {

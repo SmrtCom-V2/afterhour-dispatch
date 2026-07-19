@@ -425,6 +425,10 @@ async function classifyAndDecide(callId, language) {
     [callId]
   );
 
+  if (callResult.rows.length === 0) {
+    logger.error('classifyAndDecide: no incident joined to this call', { callId });
+    return;
+  }
   const callData = callResult.rows[0];
   const telephony = getTelephonyProvider();
   const voiceAI = getVoiceAIProvider();
@@ -440,9 +444,11 @@ async function classifyAndDecide(callId, language) {
     callData.guided_answers || {}
   );
 
-  // Determine threshold
-  const threshold = callData.ai_confidence_override ||
-                   callData.ai_confidence_threshold ||
+  // Determine threshold — ?? not ||, since an explicit override of 0
+  // ("accept anything, never ask a human") is a valid, real setting and
+  // must not be treated as unset and silently overridden.
+  const threshold = callData.ai_confidence_override ??
+                   callData.ai_confidence_threshold ??
                    config.app.defaultAiConfidenceThreshold;
 
   // Update incident with classification

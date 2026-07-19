@@ -3,6 +3,13 @@
  * Main entry point
  */
 
+// Must be imported before any route files — patches Express's router so an
+// async handler's rejected promise reaches errorHandler instead of hanging
+// the request forever. Several Super Admin routes have no manual try/catch
+// (an audit found ~15 route files with zero try blocks across dozens of
+// handlers); this is the one-line fix that covers all of them at once
+// instead of hand-adding try/catch to every handler.
+import 'express-async-errors';
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -56,6 +63,8 @@ import signupVerificationRoutes from './routes/signupVerification.js';
 import billingRoutes from './routes/billing.js';
 import stripeWebhookRoutes from './routes/stripeWebhook.js';
 import gdprRoutes from './routes/gdpr.js';
+import deviceTokensRoutes from './routes/deviceTokens.js';
+import ownerVisitReportRoutes from './routes/ownerVisitReport.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -153,6 +162,8 @@ app.use('/api/email-verification', emailVerificationRoutes);
 app.use('/api/signup-verification', signupVerificationRoutes);
 app.use('/api/billing', billingRoutes);
 app.use('/api/gdpr', gdprRoutes);
+app.use('/api/device-tokens', deviceTokensRoutes);
+app.use('/api/owner-visit-report', ownerVisitReportRoutes);
 
 // Super Admin Routes
 app.use('/sa/auth', saAuthRoutes);

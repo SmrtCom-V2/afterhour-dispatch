@@ -1,6 +1,14 @@
 import dotenv from 'dotenv';
 dotenv.config();
 
+// A missing JWT_SECRET must never silently fall back to a public default —
+// that would make every JWT (including super-admin) forgeable using a
+// string visible in source control. Fail startup instead of serving traffic
+// under a broken security guarantee.
+if (!process.env.JWT_SECRET) {
+  throw new Error('JWT_SECRET environment variable is required and must not be empty.');
+}
+
 export const config = {
   // Server
   port: parseInt(process.env.PORT || '3000', 10),
@@ -11,7 +19,7 @@ export const config = {
 
   // JWT
   jwt: {
-    secret: process.env.JWT_SECRET || 'change-me-in-production',
+    secret: process.env.JWT_SECRET,
     expiresIn: process.env.JWT_EXPIRES_IN || '24h',
   },
 

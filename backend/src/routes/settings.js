@@ -87,7 +87,7 @@ router.put('/company', async (req, res) => {
 router.get('/profile', async (req, res) => {
   try {
     const result = await db.query(
-      `SELECT id, email, name, is_admin, is_platform_admin, created_at
+      `SELECT id, email, name, phone, is_admin, is_platform_admin, created_at
        FROM fm_admin
        WHERE id = $1`,
       [req.user.id]
@@ -107,7 +107,7 @@ router.get('/profile', async (req, res) => {
 // PUT /api/settings/profile - Update current user profile
 router.put('/profile', async (req, res) => {
   try {
-    const { name, email } = req.body;
+    const { name, email, phone } = req.body;
 
     // Check if email is already taken by another user
     if (email) {
@@ -123,10 +123,11 @@ router.put('/profile', async (req, res) => {
     const result = await db.query(
       `UPDATE fm_admin SET
          name = COALESCE($1, name),
-         email = COALESCE($2, email)
-       WHERE id = $3
-       RETURNING id, email, name, is_admin, is_platform_admin`,
-      [name, email?.toLowerCase(), req.user.id]
+         email = COALESCE($2, email),
+         phone = COALESCE($3, phone)
+       WHERE id = $4
+       RETURNING id, email, name, phone, is_admin, is_platform_admin`,
+      [name, email?.toLowerCase(), phone, req.user.id]
     );
 
     if (result.rows.length === 0) {
