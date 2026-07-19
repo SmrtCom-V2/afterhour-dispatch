@@ -64,7 +64,12 @@ export function IncidentDetail() {
 
   // Format timeline event with actor information
   const formatTimelineEvent = (event) => {
-    const eventData = event.event_data ? JSON.parse(event.event_data) : {};
+    // event_data is a Postgres JSONB column — the backend's pg driver
+    // already deserializes it before res.json() sends the response, so it
+    // arrives here as a plain object, not a JSON string. JSON.parse on an
+    // already-parsed object throws (toString() -> "[object Object]" ->
+    // invalid JSON), crashing this render for every event with any data.
+    const eventData = event.event_data || {};
     const type = event.event_type;
 
     const eventDescriptions = {
