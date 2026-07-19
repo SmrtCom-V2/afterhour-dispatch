@@ -90,6 +90,10 @@ export function ServiceProviders() {
     phone: '',
     email: '',
     trade: 'general',
+    usageNote: '',
+    available24h: true,
+    availableFrom: '',
+    availableTo: '',
   });
 
   useEffect(() => {
@@ -132,6 +136,10 @@ export function ServiceProviders() {
         phone: sp.phone,
         email: sp.email || '',
         trade: sp.trade,
+        usageNote: sp.usage_note || '',
+        available24h: sp.available_24h !== false,
+        availableFrom: sp.available_from || '',
+        availableTo: sp.available_to || '',
       });
     } else {
       setEditingSp(null);
@@ -141,6 +149,10 @@ export function ServiceProviders() {
         phone: '',
         email: '',
         trade: 'general',
+        usageNote: '',
+        available24h: true,
+        availableFrom: '',
+        availableTo: '',
       });
     }
     setShowModal(true);
@@ -475,6 +487,64 @@ export function ServiceProviders() {
                       />
                     </div>
                   </div>
+                </div>
+
+                {/* Availability & Guidance — shown to the on-call person deciding
+                    which provider to call, especially useful when they're not a
+                    trade professional and need real signal beyond a bare name. */}
+                <div className="modal-pro-section">
+                  <div className="modal-pro-section-title">{t('availabilityGuidanceSection')}</div>
+
+                  <div className="form-field-pro">
+                    <div className="form-label-pro">
+                      <span className="form-label-pro-text">{t('usageNote')}</span>
+                    </div>
+                    <input
+                      type="text"
+                      className="form-input-pro"
+                      value={formData.usageNote}
+                      onChange={(e) => updateField('usageNote', e.target.value)}
+                      placeholder={t('usageNoteHint')}
+                    />
+                  </div>
+
+                  <div className="form-field-pro">
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                      <input
+                        type="checkbox"
+                        checked={formData.available24h}
+                        onChange={(e) => updateField('available24h', e.target.checked)}
+                      />
+                      <span className="form-label-pro-text">{t('available24h')}</span>
+                    </label>
+                  </div>
+
+                  {!formData.available24h && (
+                    <div className="form-row-pro">
+                      <div className="form-field-pro">
+                        <div className="form-label-pro">
+                          <span className="form-label-pro-text">{t('availableFrom')}</span>
+                        </div>
+                        <input
+                          type="time"
+                          className="form-input-pro"
+                          value={formData.availableFrom}
+                          onChange={(e) => updateField('availableFrom', e.target.value)}
+                        />
+                      </div>
+                      <div className="form-field-pro">
+                        <div className="form-label-pro">
+                          <span className="form-label-pro-text">{t('availableTo')}</span>
+                        </div>
+                        <input
+                          type="time"
+                          className="form-input-pro"
+                          value={formData.availableTo}
+                          onChange={(e) => updateField('availableTo', e.target.value)}
+                        />
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
 
