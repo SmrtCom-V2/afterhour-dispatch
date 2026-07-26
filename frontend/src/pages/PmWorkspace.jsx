@@ -1284,7 +1284,7 @@ function PmTenants({ tenants, buildings, onRefresh }) {
 }
 
 // PM Service Providers Component
-function PmServiceProviders({ serviceProviders, onRefresh }) {
+function PmServiceProviders({ serviceProviders, pmId, onRefresh }) {
   const [showModal, setShowModal] = useState(false);
   const [editingItem, setEditingItem] = useState(null);
   const [form, setForm] = useState({ companyName: '', contactName: '', phone: '', email: '', trade: 'general', notes: '' });
@@ -1317,7 +1317,7 @@ function PmServiceProviders({ serviceProviders, onRefresh }) {
       if (editingItem) {
         await api.updateServiceProvider(editingItem.id, form);
       } else {
-        await api.createServiceProvider(form);
+        await api.createServiceProvider({ ...form, pmCompanyId: pmId });
       }
       setShowModal(false);
       onRefresh();
@@ -1807,7 +1807,7 @@ export function PmWorkspace() {
         <PmTenants tenants={tenants} buildings={buildings} onRefresh={loadData} />
       )}
       {activeTab === 'service-providers' && (
-        <PmServiceProviders serviceProviders={serviceProviders} onRefresh={loadData} />
+        <PmServiceProviders serviceProviders={serviceProviders} pmId={pmId} onRefresh={loadData} />
       )}
       {activeTab === 'incidents' && (
         <PmIncidents pmId={pmId} pmName={pmCompany.name} />
