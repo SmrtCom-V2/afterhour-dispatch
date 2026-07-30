@@ -19,6 +19,7 @@ import { getTelephonyProvider } from '../providers/telephony/index.js';
 import { getEmailProvider } from '../providers/email/index.js';
 import { config } from '../config/index.js';
 import { notifyHuman } from './notificationChannel.js';
+import { sendOpsAlert } from '../utils/opsAlert.js';
 
 const CALL_TIMEOUT_MS = config.app.spCallTimeoutSeconds * 1000; // 2 minutes
 const SMS_TIMEOUT_MS = config.app.spSmsTimeoutSeconds * 1000; // 10 minutes
@@ -332,11 +333,22 @@ async function handleSpAccepted(incident, sp, attemptId) {
 }
 
 /**
- * Mark incident as no SP available
+ * Mark incident as no SP available.
+ *
+ * escalateToFM() runs right after this and overwrites status to
+ * 'escalated_to_fm' — which the scheduler's pickupExternalEmergencyDispatches
+ * job re-scans every minute for up to 60 minutes (its whole point is to
+ * retry a genuinely-unpicked-up incident). A building/trade with zero SPs
+ * configured at all can never get past this branch no matter how many times
+ * it's retried, so without a distinct marker it silently re-ran startDispatch
+ * → zero SPs → re-escalate, once a minute for up to an hour (confirmed live,
+ * 2026-07-29 — one incident logged ~60 identical "No service provider was
+ * available" timeline entries). Stamping no_sp_available_at lets the pickup
+ * query recognize "already tried this specific failure once" and stop.
  */
 async function markNoSpAvailable(incident) {
   await db.query(
-    `UPDATE incident SET status = 'no_sp_available' WHERE id = $1`,
+    `UPDATE incident SET status = 'no_sp_available', no_sp_available_at = NOW() WHERE id = $1`,
     [incident.id]
   );
 
@@ -365,7 +377,17 @@ async function escalateToFM(incident) {
         : null;
 
   if (!recipient) {
+    // Real customer-facing dead end: no service provider was available AND
+    // there's nobody to tell (no cockpit decider yet, no fm_oncall_phone
+    // configured — e.g. a company mid-onboarding). Previously just a log
+    // line nobody was watching — the tenant never gets helped and nobody
+    // finds out. sendOpsAlert pages a real phone (rate-limited per key) so
+    // this specific gap surfaces immediately instead of silently.
     logger.error('No decider or FM on-call phone available for all-SPs-failed notification', { incidentId: incident.id });
+    await sendOpsAlert(
+      `escalate_no_recipient_${incident.id}`,
+      `Incident ${incident.id} (${incident.issue_category || 'unknown'}) at ${incident.building_address || incident.building_name || 'unknown building'}: no service provider available AND no FM contact configured. Nobody has been notified. Needs manual follow-up.`,
+    );
     return;
   }
 

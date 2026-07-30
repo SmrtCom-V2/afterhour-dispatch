@@ -19,6 +19,7 @@ router.get('/company', async (req, res) => {
     const result = await db.query(
       `SELECT id, name, phone_number, fm_oncall_phone, fm_oncall_name,
               ai_confidence_threshold, status, owner_email,
+              unknown_caller_always_emergency,
               trial_start_at, trial_end_at, paid_start_at, current_period_end_at,
               created_at
        FROM fm_company
@@ -46,7 +47,8 @@ router.put('/company', async (req, res) => {
       fmOncallPhone,
       fmOncallName,
       aiConfidenceThreshold,
-      ownerEmail
+      ownerEmail,
+      unknownCallerAlwaysEmergency
     } = req.body;
 
     const result = await db.query(
@@ -56,8 +58,9 @@ router.put('/company', async (req, res) => {
          fm_oncall_phone = COALESCE($3, fm_oncall_phone),
          fm_oncall_name = COALESCE($4, fm_oncall_name),
          ai_confidence_threshold = COALESCE($5, ai_confidence_threshold),
-         owner_email = COALESCE($6, owner_email)
-       WHERE id = $7
+         owner_email = COALESCE($6, owner_email),
+         unknown_caller_always_emergency = COALESCE($7, unknown_caller_always_emergency)
+       WHERE id = $8
        RETURNING *`,
       [
         name,
@@ -66,6 +69,7 @@ router.put('/company', async (req, res) => {
         fmOncallName,
         aiConfidenceThreshold,
         ownerEmail,
+        unknownCallerAlwaysEmergency,
         req.user.fm_company_id
       ]
     );

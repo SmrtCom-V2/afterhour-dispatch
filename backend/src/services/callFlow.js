@@ -18,10 +18,9 @@
 
 import { db } from '../db/index.js';
 import { logger } from '../utils/logger.js';
-import { getVoiceAIProvider, GuidedQuestions, VerificationPrompts, IssueCategories } from '../providers/voiceai/index.js';
+import { getVoiceAIProvider, GuidedQuestions, VerificationPrompts, BusinessHoursMessages, IssueCategories } from '../providers/voiceai/index.js';
 import { getTelephonyProvider } from '../providers/telephony/index.js';
 import { config } from '../config/index.js';
-import { startDispatch } from './dispatch.js';
 
 /**
  * Handle incoming call webhook
@@ -415,7 +414,10 @@ export async function handleQuestionResponse(callId, questionIndex, spokenInput)
 async function classifyAndDecide(callId, language) {
   const callResult = await db.query(
     `SELECT c.*, i.id as incident_id, i.guided_answers, i.building_id,
-            b.ai_confidence_override, fm.ai_confidence_threshold
+            b.ai_confidence_override, fm.ai_confidence_threshold,
+            fm.unknown_caller_always_emergency,
+            pm.afterhours_start, pm.afterhours_end, pm.same_hours_all_days,
+            pm.afterhours_by_day, pm.treat_all_as_emergency
      FROM call c
      JOIN incident i ON i.call_id = c.id
      LEFT JOIN building b ON i.building_id = b.id
@@ -480,25 +482,47 @@ async function classifyAndDecide(callId, language) {
 
   // Make decision
   if (classification.isEmergency && classification.confidence >= threshold) {
-    // Clear emergency - dispatch SP
+    // Business-hours gate: does this pm_company's schedule say we're
+    // currently IN business hours (not after-hours)? If so, and the client
+    // hasn't opted into always-triage, redirect instead of paging a human
+    // for something that isn't actually after-hours. Real emergencies with
+    // no building/pm_company match yet (unverified caller) always fall
+    // through to the human path — see isCurrentlyAfterHours for the
+    // fail-open default and fm_company.unknown_caller_always_emergency.
+    const afterHoursNow = isCurrentlyAfterHours(callData);
+
+    if (!afterHoursNow && !callData.treat_all_as_emergency) {
+      await db.query(
+        `UPDATE incident SET decision = 'not_emergency', status = 'closed' WHERE id = $1`,
+        [callData.incident_id]
+      );
+
+      await addTimelineEntry(callData.incident_id, 'redirected_business_hours', {
+        category: classification.category,
+        confidence: classification.confidence,
+      });
+
+      return telephony.generateCallResponse([
+        { type: 'say', language, text: BusinessHoursMessages[language] || BusinessHoursMessages.de },
+        { type: 'hangup' },
+      ]);
+    }
+
+    // Clear emergency — Night Ops D1: AI never dispatches directly. Set
+    // ai_urgency and leave decision='pending' so the wake-up engine
+    // (runs every minute, wakeupEngine.js) pages the on-call human via the
+    // cockpit; a real person decides and chooses the service provider.
+    // T+10 fail-safe auto-dispatches only if nobody responds at all.
     await db.query(
-      `UPDATE incident SET decision = 'emergency_dispatch' WHERE id = $1`,
+      `UPDATE incident SET ai_urgency = 'critical' WHERE id = $1`,
       [callData.incident_id]
     );
 
-    await addTimelineEntry(callData.incident_id, 'decision_emergency', {});
-
-    // Get required trade
-    const requiredTrade = voiceAI.determineRequiredTrade(classification.category);
-
-    // Start dispatch (async)
-    startDispatch(callData.incident_id, requiredTrade).catch((err) => {
-      logger.error('Dispatch failed', { incidentId: callData.incident_id, error: err.message });
-    });
+    await addTimelineEntry(callData.incident_id, 'classified_emergency_pending_human', {});
 
     const emergencyMessage = language === 'de'
-      ? 'Wir haben einen Notfall erkannt. Ein Techniker wird umgehend kontaktiert. Bitte bleiben Sie ruhig.'
-      : 'We have identified an emergency. A technician is being contacted immediately. Please stay calm.';
+      ? 'Wir haben einen Notfall erkannt. Ein Mitarbeiter wird umgehend benachrichtigt. Bitte bleiben Sie ruhig.'
+      : 'We have identified an emergency. A representative is being notified immediately. Please stay calm.';
 
     return telephony.generateCallResponse([
       { type: 'say', language, text: emergencyMessage },
@@ -524,16 +548,16 @@ async function classifyAndDecide(callId, language) {
     ]);
 
   } else {
-    // Unclear - escalate to FM
+    // Unclear — same D1 rule applies: leave decision='pending', set
+    // ai_urgency='unclear' so the wake-up engine's T+0/2/5/10 escalation
+    // ladder pages a human (replaces the old one-shot SMS-only escalateUnclear,
+    // which had no retry/backup/fail-safe if that single SMS was missed).
     await db.query(
-      `UPDATE incident SET decision = 'unclear_escalated', status = 'escalated_to_fm' WHERE id = $1`,
+      `UPDATE incident SET ai_urgency = 'unclear', status = 'escalated_to_fm' WHERE id = $1`,
       [callData.incident_id]
     );
 
-    await addTimelineEntry(callData.incident_id, 'decision_unclear', { confidence: classification.confidence });
-
-    // Notify FM on-call
-    await escalateUnclear(callData.incident_id, classification);
+    await addTimelineEntry(callData.incident_id, 'classified_unclear_pending_human', { confidence: classification.confidence });
 
     const unclearMessage = language === 'de'
       ? 'Wir leiten Ihren Anruf an einen Mitarbeiter weiter. Sie werden in Kürze zurückgerufen.'
@@ -580,46 +604,6 @@ Caller could not be verified. Please call back to assess.`;
 }
 
 /**
- * Escalate unclear classification to FM
- */
-async function escalateUnclear(incidentId, classification) {
-  const incidentResult = await db.query(
-    `SELECT i.*, fm.fm_oncall_phone, b.name as building_name, b.address as building_address
-     FROM incident i
-     LEFT JOIN building b ON i.building_id = b.id
-     LEFT JOIN pm_company pm ON b.pm_company_id = pm.id
-     LEFT JOIN fm_company fm ON pm.fm_company_id = fm.id
-     WHERE i.id = $1`,
-    [incidentId]
-  );
-
-  const incident = incidentResult.rows[0];
-
-  if (!incident.fm_oncall_phone) {
-    logger.error('No FM on-call phone for escalation', { incidentId });
-    return;
-  }
-
-  const telephony = getTelephonyProvider();
-
-  const message = `UNCLEAR INCIDENT - REVIEW NEEDED
-
-Building: ${incident.building_name || 'Unknown'}
-Address: ${incident.building_address || 'Unknown'}
-Tenant: ${incident.tenant_name_given || 'Unknown'}
-
-Issue: ${classification.category}
-AI Confidence: ${classification.confidence}%
-Reason: ${classification.reason}
-
-Description: ${incident.guided_answers?.problem || 'No description'}
-
-Please call tenant to assess: ${incident.tenant_phone_given || 'Unknown'}`;
-
-  await telephony.sendSms(incident.fm_oncall_phone, message);
-}
-
-/**
  * Generate hangup response with message
  */
 function generateHangup(message) {
@@ -639,6 +623,57 @@ async function addTimelineEntry(incidentId, eventType, eventData) {
      VALUES ($1, $2, $3)`,
     [incidentId, eventType, JSON.stringify(eventData)]
   );
+}
+
+const DAY_NAMES = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+
+/**
+ * Is it currently after-hours for the pm_company this call resolved to?
+ *
+ * callData carries the LEFT JOIN'd pm_company/fm_company columns from
+ * classifyAndDecide's query — all can be NULL if the caller never matched a
+ * known tenant/building (verification failed or no match at all), since at
+ * that point we don't know which pm_company's schedule would even apply.
+ *
+ * Two client-configurable fail-open defaults (both opt-out, not opt-in,
+ * because turning away a real emergency is the worse failure mode):
+ * - No pm_company resolved at all -> governed by
+ *   fm_company.unknown_caller_always_emergency (default true).
+ * - pm_company resolved but has no schedule configured -> treat as
+ *   after-hours (same reasoning, narrower case).
+ */
+function isCurrentlyAfterHours(callData) {
+  if (!callData.building_id) {
+    return callData.unknown_caller_always_emergency !== false;
+  }
+
+  if (!callData.afterhours_start || !callData.afterhours_end) {
+    return true;
+  }
+
+  const now = new Date();
+  const currentTime = now.toTimeString().slice(0, 8); // 'HH:MM:SS'
+
+  let startTime = callData.afterhours_start;
+  let endTime = callData.afterhours_end;
+
+  if (callData.same_hours_all_days === false && callData.afterhours_by_day) {
+    const dayConfig = callData.afterhours_by_day[DAY_NAMES[now.getDay()]];
+    if (!dayConfig || dayConfig.enabled === false) {
+      return false; // explicitly disabled for today = business hours all day
+    }
+    startTime = dayConfig.start;
+    endTime = dayConfig.end;
+  }
+
+  if (!startTime || !endTime) return true;
+
+  // Overnight window (e.g. 18:00 -> 07:00) wraps past midnight; same-day
+  // window (e.g. 00:00 -> 23:59, used for "all day") does not.
+  if (startTime <= endTime) {
+    return currentTime >= startTime && currentTime <= endTime;
+  }
+  return currentTime >= startTime || currentTime <= endTime;
 }
 
 /**

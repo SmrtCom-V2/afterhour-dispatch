@@ -37,7 +37,8 @@ router.post('/', async (req, res) => {
       phone,
       adminName,
       oncallPhone,
-      emailVerified
+      emailVerified,
+      termsAccepted
     } = req.body;
 
     // Validation
@@ -50,6 +51,16 @@ router.post('/', async (req, res) => {
     if (password.length < 8) {
       return res.status(400).json({
         error: 'Password must be at least 8 characters'
+      });
+    }
+
+    // Terms acceptance must be recorded server-side, not just gated by a
+    // disabled button on the frontend — a direct API call must not be able
+    // to skip it. See consent_log usage below and gdpr.js for the same
+    // table's pattern.
+    if (termsAccepted !== true) {
+      return res.status(400).json({
+        error: 'You must accept the Terms of Service to create an account'
       });
     }
 
@@ -177,6 +188,20 @@ router.post('/', async (req, res) => {
           registration_source: 'self_signup',
           trial_days: 14
         })
+      ]
+    );
+
+    // Record Terms of Service acceptance with a timestamp, in the same
+    // consent_log table gdpr.js already uses for marketing/analytics/
+    // data_sharing consent — this was previously just a disabled-button
+    // check on the frontend with no server-side record at all.
+    await client.query(
+      `INSERT INTO consent_log (user_id, consent_type, consented, ip_address, user_agent)
+       VALUES ($1, 'terms_of_service', TRUE, $2, $3)`,
+      [
+        user.id,
+        req.ip || req.headers['x-forwarded-for'] || null,
+        req.headers['user-agent'] || null,
       ]
     );
 

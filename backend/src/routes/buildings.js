@@ -213,6 +213,68 @@ router.post('/', async (req, res) => {
   }
 });
 
+// POST /api/buildings/bulk - Bulk import buildings (CSV/Excel upload flow)
+router.post('/bulk', async (req, res) => {
+  try {
+    const { pmCompanyId, buildings } = req.body;
+
+    if (!pmCompanyId || !Array.isArray(buildings) || buildings.length === 0) {
+      return res.status(400).json({ error: 'PM company ID and buildings array required' });
+    }
+
+    // Verify PM company belongs to this FM
+    const pmCheck = await db.query(
+      'SELECT id FROM pm_company WHERE id = $1 AND fm_company_id = $2',
+      [pmCompanyId, req.user.fm_company_id]
+    );
+
+    if (pmCheck.rows.length === 0) {
+      return res.status(403).json({ error: 'PM company not found or not authorized' });
+    }
+
+    const inserted = [];
+    const errors = [];
+
+    for (const b of buildings) {
+      if (!b.address) {
+        errors.push({ building: b, error: 'Address required' });
+        continue;
+      }
+
+      try {
+        const result = await db.query(
+          `INSERT INTO building (
+            pm_company_id, name, address, city, postal_code, country,
+            building_type, total_units, status
+          )
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'active')
+           RETURNING *`,
+          [
+            pmCompanyId,
+            b.name || b.address,
+            b.address,
+            b.city || null,
+            b.postalCode || null,
+            b.country || 'Germany',
+            b.buildingType || 'residential',
+            b.totalUnits || 0,
+          ]
+        );
+        inserted.push(result.rows[0]);
+      } catch (err) {
+        errors.push({ building: b, error: err.message });
+      }
+    }
+
+    logger.info('Bulk building import', { pmCompanyId, inserted: inserted.length, errors: errors.length });
+
+    res.status(201).json({ inserted, errors });
+  } catch (error) {
+    logger.error('Error bulk importing buildings', { error: error.message });
+    res.status(500).json({ error: 'Failed to import buildings' });
+  }
+});
+
 // PUT /api/buildings/:id - Update building
 router.put('/:id', async (req, res) => {
   try {

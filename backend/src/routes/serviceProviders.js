@@ -20,19 +20,11 @@ router.get('/', async (req, res) => {
   try {
     const { trade, status, pmCompanyId } = req.query;
 
-    let query = `
-      SELECT DISTINCT sp.*,
-             (SELECT COUNT(*) FROM building_service_provider WHERE service_provider_id = sp.id) as building_count
-      FROM service_provider sp
-    `;
+    let query = `SELECT sp.* FROM service_provider sp`;
 
-    // If filtering by PM, join through building_service_provider
+    // PM workspace sees its own contracted SPs plus the FM's shared pool (pm_company_id IS NULL)
     if (pmCompanyId) {
-      query += `
-        LEFT JOIN building_service_provider bsp ON sp.id = bsp.service_provider_id
-        LEFT JOIN building b ON bsp.building_id = b.id
-        WHERE sp.fm_company_id = $1 AND b.pm_company_id = $2
-      `;
+      query += ` WHERE sp.fm_company_id = $1 AND (sp.pm_company_id = $2 OR sp.pm_company_id IS NULL)`;
     } else {
       query += ` WHERE sp.fm_company_id = $1`;
     }
@@ -74,20 +66,7 @@ router.get('/:id', async (req, res) => {
       return res.status(404).json({ error: 'Service provider not found' });
     }
 
-    // Get assigned buildings
-    const buildingsResult = await db.query(
-      `SELECT b.id, b.name, b.address, bsp.priority
-       FROM building b
-       JOIN building_service_provider bsp ON b.id = bsp.building_id
-       WHERE bsp.service_provider_id = $1
-       ORDER BY bsp.priority`,
-      [id]
-    );
-
-    res.json({
-      serviceProvider: spResult.rows[0],
-      assignedBuildings: buildingsResult.rows,
-    });
+    res.json({ serviceProvider: spResult.rows[0] });
   } catch (error) {
     logger.error('Error fetching service provider', { error: error.message });
     res.status(500).json({ error: 'Failed to fetch service provider' });
@@ -97,7 +76,7 @@ router.get('/:id', async (req, res) => {
 // POST /api/service-providers - Create SP
 router.post('/', async (req, res) => {
   try {
-    const { companyName, contactName, phone, email, trade, status, usageNote, available24h, availableFrom, availableTo } = req.body;
+    const { companyName, contactName, phone, email, trade, status, usageNote, available24h, availableFrom, availableTo, pmCompanyId } = req.body;
 
     if (!companyName || !phone || !trade) {
       return res.status(400).json({ error: 'Company name, phone, and trade required' });
@@ -111,12 +90,12 @@ router.post('/', async (req, res) => {
 
     const result = await db.query(
       `INSERT INTO service_provider
-         (fm_company_id, company_name, contact_name, phone, email, trade, status,
+         (fm_company_id, pm_company_id, company_name, contact_name, phone, email, trade, status,
           usage_note, available_24h, available_from, available_to)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
        RETURNING *`,
       [
-        req.user.fm_company_id, companyName, contactName, phone, email, trade, status || 'active',
+        req.user.fm_company_id, pmCompanyId || null, companyName, contactName, phone, email, trade, status || 'active',
         usageNote || null, available24h !== false, availableFrom || null, availableTo || null,
       ]
     );

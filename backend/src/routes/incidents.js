@@ -30,7 +30,7 @@ router.use(authenticateToken);
 // GET /api/incidents - List incidents for FM company
 router.get('/', async (req, res) => {
   try {
-    const { status, buildingId, pmCompanyId, isEmergency, dateFrom, dateTo, limit = 50, offset = 0 } = req.query;
+    const { status, buildingId, pmCompanyId, isEmergency, dateFrom, dateTo, missingReport, limit = 50, offset = 0 } = req.query;
 
     let query = `
       SELECT i.*,
@@ -54,7 +54,14 @@ router.get('/', async (req, res) => {
       params.push(pmCompanyId);
     }
 
-    if (status) {
+    if (status === 'open') {
+      // "open" here means the dashboard's definition (not closed / not
+      // completed), matching /stats' open_incidents count — NOT a literal
+      // status='open' match, since a real incident's status also moves
+      // through sp_dispatched/escalated_to_fm/etc while still being "open"
+      // from an operator's point of view.
+      query += ` AND i.status NOT IN ('closed', 'sp_completed')`;
+    } else if (status) {
       query += ` AND i.status = $${params.length + 1}`;
       params.push(status);
     }
@@ -79,6 +86,10 @@ router.get('/', async (req, res) => {
       params.push(dateTo);
     }
 
+    if (missingReport === 'true') {
+      query += ` AND EXISTS (SELECT 1 FROM sp_report sr WHERE sr.incident_id = i.id AND sr.status = 'missing')`;
+    }
+
     query += ` ORDER BY i.created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
     params.push(parseInt(limit), parseInt(offset));
 
@@ -99,7 +110,9 @@ router.get('/', async (req, res) => {
       countParams.push(pmCompanyId);
     }
 
-    if (status) {
+    if (status === 'open') {
+      countQuery += ` AND i.status NOT IN ('closed', 'sp_completed')`;
+    } else if (status) {
       countQuery += ` AND i.status = $${countParams.length + 1}`;
       countParams.push(status);
     }
@@ -124,6 +137,12 @@ router.get('/stats', async (req, res) => {
     const { pmCompanyId } = req.query;
     const today = new Date();
     today.setHours(0, 0, 0, 0);
+
+    const companyResult = await db.query(
+      `SELECT created_at FROM fm_company WHERE id = $1`,
+      [req.user.fm_company_id]
+    );
+    const companyCreatedAt = companyResult.rows[0]?.created_at || null;
 
     let pmFilter = '';
     const params = [req.user.fm_company_id, today.toISOString()];
@@ -158,11 +177,43 @@ router.get('/stats', async (req, res) => {
           JOIN incident i ON sr.incident_id = i.id
           LEFT JOIN building b ON i.building_id = b.id
           LEFT JOIN pm_company pm ON b.pm_company_id = pm.id
-          WHERE pm.fm_company_id = $1 AND sr.status = 'missing'${pmFilter}) as missing_reports`,
+          WHERE pm.fm_company_id = $1 AND sr.status = 'missing'${pmFilter}) as missing_reports,
+
+         (SELECT COUNT(*) FROM call c3
+          LEFT JOIN incident i3 ON i3.call_id = c3.id
+          LEFT JOIN building b3 ON i3.building_id = b3.id
+          LEFT JOIN pm_company pm3 ON b3.pm_company_id = pm3.id
+          WHERE c3.fm_company_id = $1 AND c3.created_at >= NOW() - INTERVAL '30 days'${pmCompanyId ? ' AND pm3.id = $3' : ''}) as month_calls`,
       params
     );
 
-    res.json({ stats: stats.rows[0] });
+    const weekCallsParams = pmCompanyId ? [req.user.fm_company_id, pmCompanyId] : [req.user.fm_company_id];
+    const weekCallsResult = await db.query(
+      `SELECT
+         (c.created_at AT TIME ZONE 'Europe/Berlin')::date as call_date,
+         COUNT(*) as call_count
+       FROM call c
+       LEFT JOIN incident i ON i.call_id = c.id
+       LEFT JOIN building b ON i.building_id = b.id
+       LEFT JOIN pm_company pm ON b.pm_company_id = pm.id
+       WHERE c.fm_company_id = $1
+         AND c.created_at >= NOW() - INTERVAL '7 days'${pmCompanyId ? ' AND pm.id = $2' : ''}
+       GROUP BY call_date`,
+      weekCallsParams
+    );
+
+    const dailyCallCounts = {};
+    for (const row of weekCallsResult.rows) {
+      dailyCallCounts[row.call_date.toISOString().slice(0, 10)] = parseInt(row.call_count, 10);
+    }
+
+    res.json({
+      stats: {
+        ...stats.rows[0],
+        daily_call_counts: dailyCallCounts,
+        company_created_at: companyCreatedAt,
+      },
+    });
   } catch (error) {
     logger.error('Error fetching incident stats', { error: error.message });
     res.status(500).json({ error: 'Failed to fetch stats' });

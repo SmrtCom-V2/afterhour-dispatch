@@ -94,6 +94,11 @@ export async function notifyHuman({ recipient, purpose, content, channels, corre
     }
   }
 
+  // Resolves normally (doesn't throw) on total failure — callers must check
+  // `.delivered` themselves if they need to react (e.g. page ops). Not done
+  // here: sendOpsAlert() lives in opsAlert.js, which itself calls
+  // notifyHuman() to place the alert call — importing it here would create
+  // opsAlert.js <-> notificationChannel.js circular import.
   logger.error('notifyHuman: all channels exhausted, nobody notified', { purpose, recipient: recipient.phone, correlation });
   return { delivered: false, channelUsed: null, providerMessageId: null, reason: 'all_channels_failed' };
 }

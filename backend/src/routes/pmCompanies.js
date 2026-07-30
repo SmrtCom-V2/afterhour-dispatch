@@ -87,7 +87,8 @@ router.post('/', async (req, res) => {
       afterhoursEnd,
       sameHoursAllDays,
       afterhoursByDay,
-      emergencyRules
+      emergencyRules,
+      treatAllAsEmergency
     } = req.body;
 
     if (!name) {
@@ -99,9 +100,9 @@ router.post('/', async (req, res) => {
         fm_company_id, name, contact_name, contact_email, contact_phone,
         service_phone, address, city, postal_code, country, notes, status,
         ai_confidence_threshold, afterhours_start, afterhours_end,
-        same_hours_all_days, afterhours_by_day, emergency_rules
+        same_hours_all_days, afterhours_by_day, emergency_rules, treat_all_as_emergency
       )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
        RETURNING *`,
       [
         req.user.fm_company_id,
@@ -121,7 +122,8 @@ router.post('/', async (req, res) => {
         afterhoursEnd || '07:00',
         sameHoursAllDays !== false,
         afterhoursByDay ? JSON.stringify(afterhoursByDay) : null,
-        emergencyRules ? JSON.stringify(emergencyRules) : '{}'
+        emergencyRules ? JSON.stringify(emergencyRules) : '{}',
+        treatAllAsEmergency === true
       ]
     );
 
@@ -155,7 +157,8 @@ router.put('/:id', async (req, res) => {
       afterhoursEnd,
       sameHoursAllDays,
       afterhoursByDay,
-      emergencyRules
+      emergencyRules,
+      treatAllAsEmergency
     } = req.body;
 
     const result = await db.query(
@@ -176,8 +179,9 @@ router.put('/:id', async (req, res) => {
          afterhours_end = COALESCE($14, afterhours_end),
          same_hours_all_days = COALESCE($15, same_hours_all_days),
          afterhours_by_day = COALESCE($16, afterhours_by_day),
-         emergency_rules = COALESCE($17, emergency_rules)
-       WHERE id = $18 AND fm_company_id = $19
+         emergency_rules = COALESCE($17, emergency_rules),
+         treat_all_as_emergency = COALESCE($18, treat_all_as_emergency)
+       WHERE id = $19 AND fm_company_id = $20
        RETURNING *`,
       [
         name,
@@ -197,6 +201,7 @@ router.put('/:id', async (req, res) => {
         sameHoursAllDays,
         afterhoursByDay ? JSON.stringify(afterhoursByDay) : null,
         emergencyRules ? JSON.stringify(emergencyRules) : null,
+        treatAllAsEmergency,
         id,
         req.user.fm_company_id
       ]
@@ -220,10 +225,17 @@ router.delete('/:id', async (req, res) => {
   try {
     const { id } = req.params;
 
-    // Check if PM has buildings
+    // Check if PM has buildings — scoped to the caller's own fm_company_id
+    // (joined through pm_company), matching every other query in this file.
+    // Without this join, a caller could probe another company's pm_company
+    // ID and learn whether it exists and how many buildings it has, purely
+    // from this 400-vs-404 response, before the actual DELETE below (which
+    // is correctly scoped) ever runs.
     const buildingCount = await db.query(
-      'SELECT COUNT(*) FROM building WHERE pm_company_id = $1',
-      [id]
+      `SELECT COUNT(*) FROM building b
+       JOIN pm_company pm ON b.pm_company_id = pm.id
+       WHERE b.pm_company_id = $1 AND pm.fm_company_id = $2`,
+      [id, req.user.fm_company_id]
     );
 
     if (parseInt(buildingCount.rows[0].count) > 0) {

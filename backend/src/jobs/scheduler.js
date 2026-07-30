@@ -248,6 +248,7 @@ async function pickupExternalEmergencyDispatches() {
          AND i.status IN ('open', 'escalated_to_fm')
          AND i.decision_at > NOW() - INTERVAL '60 minutes'
          AND (i.call_id IS NULL OR i.decision_at < NOW() - INTERVAL '90 seconds')
+         AND i.no_sp_available_at IS NULL
          AND NOT EXISTS (SELECT 1 FROM dispatch_attempt da WHERE da.incident_id = i.id)`
     );
 

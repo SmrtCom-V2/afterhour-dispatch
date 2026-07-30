@@ -1,474 +1,317 @@
 /**
  * Super Admin GDPR Tools
  * Data privacy management, export, and deletion tools
+ *
+ * REBUILT 2026-07-29 against the real schema (fm_admin / tenant / fm_employee /
+ * call / incident), replacing the earlier version that was written against a
+ * hypothetical users/incidents/pm_companies schema and always returned 501.
+ *
+ * Subject model: `gdpr_deletion_requests.user_id` / `gdpr_export_requests.user_id`
+ * point at `fm_admin.id` — the only login-capable identity in this system.
+ * See backend/src/services/gdprExecution.js for the full anonymization/export
+ * logic and the reasoning on what gets anonymized vs deleted vs retained.
+ *
+ * Safety: approval is the only action that touches real data, and it always
+ * requires the caller to already have taken a fresh pg_dump backup — see
+ * scripts/pre-gdpr-backup.js. The route itself does NOT take the backup
+ * (that must happen from a shell with server access, verified, before this
+ * endpoint is called) but it DOES refuse to run if the backup marker isn't
+ * fresh, so a super admin can't accidentally skip the step.
  */
 
 import { Router } from 'express';
+import fs from 'fs/promises';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { db } from '../db/index.js';
 import { authenticateSuperAdmin } from '../middleware/superAdmin.js';
+import { writeAuditLog } from '../utils/saAudit.js';
+import { logger } from '../utils/logger.js';
+import { executeAnonymization, buildDataExport } from '../services/gdprExecution.js';
+import { GDPR_EXPORT_DIR } from '../services/gdprExportStore.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const BACKUP_MARKER_PATH = path.join(__dirname, '../../.gdpr-backup-marker.json');
+const BACKUP_FRESHNESS_MS = 30 * 60 * 1000; // backup must be <30 min old to proceed
 
 const router = Router();
 
-// GET /sa/gdpr/stats - Get GDPR compliance stats
-router.get('/stats', authenticateSuperAdmin, async (req, res) => {
+router.use(authenticateSuperAdmin);
+
+/**
+ * Confirms a pre-deletion backup marker was written recently by
+ * scripts/pre-gdpr-backup.js. This is a soft safety net, not a cryptographic
+ * guarantee — its purpose is to stop a super admin from approving a deletion
+ * without having just run the backup step in this same operating session.
+ */
+async function assertRecentBackup() {
+  let marker;
   try {
-    // Get export request counts
-    const exportRequests = await db.query(`
-      SELECT
-        COUNT(*) FILTER (WHERE status = 'pending') as pending,
-        COUNT(*) FILTER (WHERE status = 'completed') as completed,
-        COUNT(*) FILTER (WHERE status = 'processing') as processing,
-        COUNT(*) as total
-      FROM gdpr_export_requests
-      WHERE created_at > NOW() - INTERVAL '30 days'
-    `).catch(() => ({ rows: [{ pending: 0, completed: 0, processing: 0, total: 0 }] }));
-
-    // Get deletion request counts
-    const deletionRequests = await db.query(`
-      SELECT
-        COUNT(*) FILTER (WHERE status = 'pending') as pending,
-        COUNT(*) FILTER (WHERE status = 'completed') as completed,
-        COUNT(*) FILTER (WHERE status = 'processing') as processing,
-        COUNT(*) as total
-      FROM gdpr_deletion_requests
-      WHERE created_at > NOW() - INTERVAL '30 days'
-    `).catch(() => ({ rows: [{ pending: 0, completed: 0, processing: 0, total: 0 }] }));
-
-    // Get consent stats
-    const consentStats = await db.query(`
-      SELECT
-        COUNT(*) as total_users,
-        COUNT(*) FILTER (WHERE marketing_consent = true) as marketing_consent,
-        COUNT(*) FILTER (WHERE analytics_consent = true) as analytics_consent,
-        COUNT(*) FILTER (WHERE data_sharing_consent = true) as data_sharing_consent
-      FROM users
-    `).catch(() => ({ rows: [{ total_users: 0, marketing_consent: 0, analytics_consent: 0, data_sharing_consent: 0 }] }));
-
-    res.json({
-      export_requests: exportRequests.rows[0],
-      deletion_requests: deletionRequests.rows[0],
-      consent_stats: consentStats.rows[0],
-    });
-  } catch (error) {
-    console.error('Error fetching GDPR stats:', error);
-    res.status(500).json({ error: 'Failed to fetch GDPR stats' });
+    const raw = await fs.readFile(BACKUP_MARKER_PATH, 'utf-8');
+    marker = JSON.parse(raw);
+  } catch {
+    const err = new Error(
+      'No GDPR pre-deletion backup marker found. Run scripts/pre-gdpr-backup.js on the server before approving any deletion.'
+    );
+    err.code = 'BACKUP_REQUIRED';
+    throw err;
   }
-});
 
-// GET /sa/gdpr/export-requests - List data export requests
-router.get('/export-requests', authenticateSuperAdmin, async (req, res) => {
+  const age = Date.now() - new Date(marker.takenAt).getTime();
+  if (age > BACKUP_FRESHNESS_MS) {
+    const err = new Error(
+      `Last GDPR backup is ${Math.round(age / 60000)} minutes old (marker: ${marker.file}). ` +
+      `Re-run scripts/pre-gdpr-backup.js — backups older than 30 minutes are not trusted for a destructive run.`
+    );
+    err.code = 'BACKUP_STALE';
+    throw err;
+  }
+
+  return marker;
+}
+
+// ============================================
+// DELETION REQUESTS
+// ============================================
+
+// GET /sa/gdpr/deletion-requests - list all deletion requests
+router.get('/deletion-requests', async (req, res) => {
   try {
-    const { status, days = 30 } = req.query;
-
-    let query = `
-      SELECT
-        ger.*,
-        u.name as user_name,
-        u.email as user_email,
-        c.name as company_name
-      FROM gdpr_export_requests ger
-      LEFT JOIN users u ON u.id = ger.user_id
-      LEFT JOIN pm_companies c ON c.id = ger.company_id
-      WHERE ger.created_at > NOW() - INTERVAL '${parseInt(days, 10)} days'
-    `;
+    const { status } = req.query;
     const params = [];
-
+    let where = '';
     if (status) {
       params.push(status);
-      query += ` AND ger.status = $${params.length}`;
+      where = `WHERE gdr.status = $1`;
     }
 
-    query += ' ORDER BY ger.created_at DESC LIMIT 100';
+    const result = await db.query(
+      `SELECT gdr.id, gdr.user_id, gdr.company_id, gdr.status, gdr.reason,
+              gdr.created_at, gdr.processed_at, gdr.rejection_reason,
+              fa.email AS admin_email, fa.name AS admin_name, fa.is_admin AS admin_is_owner,
+              fc.name AS company_name
+       FROM gdpr_deletion_requests gdr
+       LEFT JOIN fm_admin fa ON fa.id = gdr.user_id
+       LEFT JOIN fm_company fc ON fc.id = gdr.company_id
+       ${where}
+       ORDER BY gdr.created_at DESC
+       LIMIT 200`,
+      params
+    );
 
-    const result = await db.query(query, params).catch(() => ({ rows: [] }));
     res.json({ requests: result.rows });
   } catch (error) {
-    console.error('Error fetching export requests:', error);
-    res.status(500).json({ error: 'Failed to fetch export requests' });
+    logger.error('Error listing GDPR deletion requests', { error: error.message });
+    res.status(500).json({ error: 'Failed to list deletion requests' });
   }
 });
 
-// GET /sa/gdpr/deletion-requests - List data deletion requests
-router.get('/deletion-requests', authenticateSuperAdmin, async (req, res) => {
+// POST /sa/gdpr/deletion-requests/:id/approve - approve AND execute real anonymization
+router.post('/deletion-requests/:id/approve', async (req, res) => {
+  const { id } = req.params;
+
   try {
-    const { status, days = 30 } = req.query;
+    const reqRow = await db.query(
+      `SELECT id, user_id, company_id, status FROM gdpr_deletion_requests WHERE id = $1`,
+      [id]
+    );
 
-    let query = `
-      SELECT
-        gdr.*,
-        u.name as user_name,
-        u.email as user_email,
-        c.name as company_name
-      FROM gdpr_deletion_requests gdr
-      LEFT JOIN users u ON u.id = gdr.user_id
-      LEFT JOIN pm_companies c ON c.id = gdr.company_id
-      WHERE gdr.created_at > NOW() - INTERVAL '${parseInt(days, 10)} days'
-    `;
+    if (reqRow.rows.length === 0) {
+      return res.status(404).json({ error: 'Deletion request not found' });
+    }
+
+    const request = reqRow.rows[0];
+
+    if (request.status !== 'pending') {
+      return res.status(400).json({
+        error: `Request is already '${request.status}', cannot approve again`,
+      });
+    }
+
+    // Hard safety gate: refuse to execute without a fresh, verified backup.
+    let backupMarker;
+    try {
+      backupMarker = await assertRecentBackup();
+    } catch (backupErr) {
+      logger.error('GDPR deletion blocked — no fresh backup', { error: backupErr.message });
+      return res.status(412).json({
+        error: backupErr.message,
+        code: backupErr.code || 'BACKUP_REQUIRED',
+      });
+    }
+
+    const before = await db.query(
+      `SELECT name, email, phone FROM fm_admin WHERE id = $1`,
+      [request.user_id]
+    );
+
+    const summary = await executeAnonymization({ adminId: request.user_id });
+
+    await db.query(
+      `UPDATE gdpr_deletion_requests
+       SET status = 'completed', processed_at = NOW()
+       WHERE id = $1`,
+      [id]
+    );
+
+    await writeAuditLog({
+      actorAdminId: req.superAdmin.id,
+      companyId: request.company_id,
+      actionType: 'gdpr_deletion_approved_and_executed',
+      ip: req.ip || req.headers['x-forwarded-for'],
+      userAgent: req.headers['user-agent'],
+      before: before.rows[0] || null,
+      after: { anonymized: true },
+      metadata: { request_id: id, backup_file: backupMarker.file, summary },
+    });
+
+    logger.info('GDPR deletion request approved and executed', {
+      requestId: id,
+      superAdmin: req.superAdmin.email,
+      summary,
+    });
+
+    res.json({ ok: true, message: 'Deletion executed and request marked completed', summary });
+  } catch (error) {
+    logger.error('Error approving GDPR deletion request', { error: error.message, stack: error.stack });
+    res.status(500).json({ error: 'Failed to execute deletion', detail: error.message });
+  }
+});
+
+// POST /sa/gdpr/deletion-requests/:id/reject - reject with reason, no data touched
+router.post('/deletion-requests/:id/reject', async (req, res) => {
+  const { id } = req.params;
+  const { reason } = req.body;
+
+  if (!reason || !reason.trim()) {
+    return res.status(400).json({ error: 'Rejection reason is required' });
+  }
+
+  try {
+    const result = await db.query(
+      `UPDATE gdpr_deletion_requests
+       SET status = 'rejected', processed_at = NOW(), rejection_reason = $2
+       WHERE id = $1 AND status = 'pending'
+       RETURNING id, company_id`,
+      [id, reason]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Pending request not found' });
+    }
+
+    await writeAuditLog({
+      actorAdminId: req.superAdmin.id,
+      companyId: result.rows[0].company_id,
+      actionType: 'gdpr_deletion_rejected',
+      ip: req.ip || req.headers['x-forwarded-for'],
+      userAgent: req.headers['user-agent'],
+      metadata: { request_id: id, reason },
+    });
+
+    res.json({ ok: true, message: 'Deletion request rejected' });
+  } catch (error) {
+    logger.error('Error rejecting GDPR deletion request', { error: error.message });
+    res.status(500).json({ error: 'Failed to reject request' });
+  }
+});
+
+// ============================================
+// EXPORT REQUESTS
+// ============================================
+
+// GET /sa/gdpr/export-requests - list all export requests
+router.get('/export-requests', async (req, res) => {
+  try {
+    const { status } = req.query;
     const params = [];
-
+    let where = '';
     if (status) {
       params.push(status);
-      query += ` AND gdr.status = $${params.length}`;
+      where = `WHERE ger.status = $1`;
     }
 
-    query += ' ORDER BY gdr.created_at DESC LIMIT 100';
+    const result = await db.query(
+      `SELECT ger.id, ger.user_id, ger.company_id, ger.status, ger.created_at,
+              ger.processed_at, ger.completed_at, ger.download_url, ger.expires_at,
+              fa.email AS admin_email, fa.name AS admin_name,
+              fc.name AS company_name
+       FROM gdpr_export_requests ger
+       LEFT JOIN fm_admin fa ON fa.id = ger.user_id
+       LEFT JOIN fm_company fc ON fc.id = ger.company_id
+       ${where}
+       ORDER BY ger.created_at DESC
+       LIMIT 200`,
+      params
+    );
 
-    const result = await db.query(query, params).catch(() => ({ rows: [] }));
     res.json({ requests: result.rows });
   } catch (error) {
-    console.error('Error fetching deletion requests:', error);
-    res.status(500).json({ error: 'Failed to fetch deletion requests' });
+    logger.error('Error listing GDPR export requests', { error: error.message });
+    res.status(500).json({ error: 'Failed to list export requests' });
   }
 });
 
-// POST /sa/gdpr/export-requests/:id/process - Process an export request
-router.post('/export-requests/:id/process', authenticateSuperAdmin, async (req, res) => {
+// POST /sa/gdpr/export-requests/:id/approve - generate the real export file
+router.post('/export-requests/:id/approve', async (req, res) => {
+  const { id } = req.params;
+
   try {
-    const { id } = req.params;
+    const reqRow = await db.query(
+      `SELECT id, user_id, company_id, status FROM gdpr_export_requests WHERE id = $1`,
+      [id]
+    );
 
-    // Update status to processing
-    await db.query(`
-      UPDATE gdpr_export_requests
-      SET status = 'processing', processed_at = NOW()
-      WHERE id = $1
-    `, [id]).catch(() => {});
-
-    // In a real implementation, this would trigger an async job
-    // For now, we'll mark it as completed after "processing"
-    setTimeout(async () => {
-      await db.query(`
-        UPDATE gdpr_export_requests
-        SET status = 'completed', completed_at = NOW()
-        WHERE id = $1
-      `, [id]).catch(() => {});
-    }, 2000);
-
-    res.json({ ok: true, message: 'Export request processing started' });
-  } catch (error) {
-    console.error('Error processing export request:', error);
-    res.status(500).json({ error: 'Failed to process export request' });
-  }
-});
-
-// POST /sa/gdpr/deletion-requests/:id/process - Process a deletion request
-router.post('/deletion-requests/:id/process', authenticateSuperAdmin, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { confirm } = req.body;
-
-    if (!confirm) {
-      return res.status(400).json({ error: 'Confirmation required for deletion' });
+    if (reqRow.rows.length === 0) {
+      return res.status(404).json({ error: 'Export request not found' });
     }
 
-    // Update status to processing
-    await db.query(`
-      UPDATE gdpr_deletion_requests
-      SET status = 'processing', processed_at = NOW()
-      WHERE id = $1
-    `, [id]).catch(() => {});
+    const request = reqRow.rows[0];
 
-    res.json({ ok: true, message: 'Deletion request processing started' });
-  } catch (error) {
-    console.error('Error processing deletion request:', error);
-    res.status(500).json({ error: 'Failed to process deletion request' });
-  }
-});
-
-// POST /sa/gdpr/deletion-requests/:id/reject - Reject a deletion request
-router.post('/deletion-requests/:id/reject', authenticateSuperAdmin, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { reason } = req.body;
-
-    await db.query(`
-      UPDATE gdpr_deletion_requests
-      SET status = 'rejected', rejection_reason = $2, processed_at = NOW()
-      WHERE id = $1
-    `, [id, reason || 'Request rejected by administrator']).catch(() => {});
-
-    res.json({ ok: true });
-  } catch (error) {
-    console.error('Error rejecting deletion request:', error);
-    res.status(500).json({ error: 'Failed to reject deletion request' });
-  }
-});
-
-// GET /sa/gdpr/user/:userId/data - Get all data for a specific user (data portability)
-router.get('/user/:userId/data', authenticateSuperAdmin, async (req, res) => {
-  try {
-    const { userId } = req.params;
-
-    // Get user profile
-    const userResult = await db.query(`
-      SELECT id, name, email, phone, role, created_at, last_login_at,
-             marketing_consent, analytics_consent, data_sharing_consent
-      FROM users WHERE id = $1
-    `, [userId]).catch(() => ({ rows: [] }));
-
-    if (userResult.rows.length === 0) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-
-    // Get user's incidents
-    const incidents = await db.query(`
-      SELECT id, title, description, status, priority, created_at
-      FROM incidents WHERE created_by = $1
-      ORDER BY created_at DESC
-    `, [userId]).catch(() => ({ rows: [] }));
-
-    // Get user's activity logs
-    const activityLogs = await db.query(`
-      SELECT action, target_type, created_at, ip_address
-      FROM sa_audit_logs WHERE user_id = $1
-      ORDER BY created_at DESC LIMIT 100
-    `, [userId]).catch(() => ({ rows: [] }));
-
-    // Get user's session history
-    const sessions = await db.query(`
-      SELECT created_at, ip_address, user_agent, last_activity_at
-      FROM user_sessions WHERE user_id = $1
-      ORDER BY created_at DESC LIMIT 50
-    `, [userId]).catch(() => ({ rows: [] }));
-
-    res.json({
-      user: userResult.rows[0],
-      incidents: incidents.rows,
-      activity_logs: activityLogs.rows,
-      sessions: sessions.rows,
-      exported_at: new Date().toISOString(),
-    });
-  } catch (error) {
-    console.error('Error fetching user data:', error);
-    res.status(500).json({ error: 'Failed to fetch user data' });
-  }
-});
-
-// GET /sa/gdpr/company/:companyId/data - Get all data for a specific company
-router.get('/company/:companyId/data', authenticateSuperAdmin, async (req, res) => {
-  try {
-    const { companyId } = req.params;
-
-    // Get company profile
-    const companyResult = await db.query(`
-      SELECT * FROM pm_companies WHERE id = $1
-    `, [companyId]).catch(() => ({ rows: [] }));
-
-    if (companyResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Company not found' });
-    }
-
-    // Get company users
-    const users = await db.query(`
-      SELECT id, name, email, role, created_at
-      FROM users WHERE company_id = $1
-    `, [companyId]).catch(() => ({ rows: [] }));
-
-    // Get company buildings
-    const buildings = await db.query(`
-      SELECT id, name, address, created_at
-      FROM buildings WHERE company_id = $1
-    `, [companyId]).catch(() => ({ rows: [] }));
-
-    // Get company incidents count
-    const incidentsCount = await db.query(`
-      SELECT COUNT(*) as count FROM incidents WHERE company_id = $1
-    `, [companyId]).catch(() => ({ rows: [{ count: 0 }] }));
-
-    res.json({
-      company: companyResult.rows[0],
-      users: users.rows,
-      buildings: buildings.rows,
-      incidents_count: parseInt(incidentsCount.rows[0].count, 10),
-      exported_at: new Date().toISOString(),
-    });
-  } catch (error) {
-    console.error('Error fetching company data:', error);
-    res.status(500).json({ error: 'Failed to fetch company data' });
-  }
-});
-
-// POST /sa/gdpr/user/:userId/anonymize - Anonymize user data (soft delete)
-router.post('/user/:userId/anonymize', authenticateSuperAdmin, async (req, res) => {
-  try {
-    const { userId } = req.params;
-    const { confirm, reason } = req.body;
-
-    if (!confirm) {
-      return res.status(400).json({ error: 'Confirmation required for anonymization' });
-    }
-
-    // Anonymize user data
-    const anonymizedEmail = `deleted_${userId}@anonymized.local`;
-    const anonymizedName = 'Deleted User';
-
-    await db.query(`
-      UPDATE users
-      SET
-        name = $2,
-        email = $3,
-        phone = NULL,
-        disabled = true,
-        anonymized_at = NOW(),
-        anonymization_reason = $4
-      WHERE id = $1
-    `, [userId, anonymizedName, anonymizedEmail, reason || 'GDPR deletion request']).catch(() => {});
-
-    // Log the action
-    await db.query(`
-      INSERT INTO sa_audit_logs (admin_id, action, target_type, target_id, details)
-      VALUES ($1, 'anonymize_user', 'user', $2, $3)
-    `, [req.saAdmin.id, userId, JSON.stringify({ reason })]).catch(() => {});
-
-    res.json({ ok: true, message: 'User data anonymized' });
-  } catch (error) {
-    console.error('Error anonymizing user:', error);
-    res.status(500).json({ error: 'Failed to anonymize user' });
-  }
-});
-
-// GET /sa/gdpr/consent-log - Get consent change log
-router.get('/consent-log', authenticateSuperAdmin, async (req, res) => {
-  try {
-    const { days = 30 } = req.query;
-
-    const result = await db.query(`
-      SELECT
-        cl.*,
-        u.name as user_name,
-        u.email as user_email
-      FROM consent_log cl
-      LEFT JOIN users u ON u.id = cl.user_id
-      WHERE cl.created_at > NOW() - INTERVAL '${parseInt(days, 10)} days'
-      ORDER BY cl.created_at DESC
-      LIMIT 200
-    `).catch(() => ({ rows: [] }));
-
-    res.json({ logs: result.rows });
-  } catch (error) {
-    console.error('Error fetching consent log:', error);
-    res.status(500).json({ error: 'Failed to fetch consent log' });
-  }
-});
-
-// GET /sa/gdpr/data-retention - Get data retention settings
-router.get('/data-retention', authenticateSuperAdmin, async (req, res) => {
-  try {
-    const result = await db.query(`
-      SELECT * FROM gdpr_data_retention_settings
-    `).catch(() => ({ rows: [] }));
-
-    // Default settings if none exist
-    const defaults = [
-      { data_type: 'incidents', retention_days: 365, auto_delete: false, description: 'Incident records' },
-      { data_type: 'audit_logs', retention_days: 730, auto_delete: true, description: 'Audit log entries' },
-      { data_type: 'user_sessions', retention_days: 90, auto_delete: true, description: 'User session data' },
-      { data_type: 'call_recordings', retention_days: 180, auto_delete: false, description: 'Call recordings' },
-      { data_type: 'export_requests', retention_days: 30, auto_delete: true, description: 'Data export requests' },
-    ];
-
-    const settings = result.rows.length > 0 ? result.rows : defaults;
-    res.json({ settings });
-  } catch (error) {
-    console.error('Error fetching data retention settings:', error);
-    res.status(500).json({ error: 'Failed to fetch data retention settings' });
-  }
-});
-
-// PUT /sa/gdpr/data-retention/:dataType - Update data retention setting
-router.put('/data-retention/:dataType', authenticateSuperAdmin, async (req, res) => {
-  try {
-    const { dataType } = req.params;
-    const { retention_days, auto_delete } = req.body;
-
-    // Ensure table exists
-    await db.query(`
-      CREATE TABLE IF NOT EXISTS gdpr_data_retention_settings (
-        data_type VARCHAR(100) PRIMARY KEY,
-        retention_days INTEGER NOT NULL DEFAULT 365,
-        auto_delete BOOLEAN DEFAULT false,
-        description TEXT,
-        updated_at TIMESTAMP DEFAULT NOW()
-      )
-    `).catch(() => {});
-
-    await db.query(`
-      INSERT INTO gdpr_data_retention_settings (data_type, retention_days, auto_delete, updated_at)
-      VALUES ($1, $2, $3, NOW())
-      ON CONFLICT (data_type) DO UPDATE SET
-        retention_days = $2,
-        auto_delete = $3,
-        updated_at = NOW()
-    `, [dataType, retention_days, auto_delete]);
-
-    res.json({ ok: true });
-  } catch (error) {
-    console.error('Error updating data retention:', error);
-    res.status(500).json({ error: 'Failed to update data retention settings' });
-  }
-});
-
-// POST /sa/gdpr/run-cleanup - Manually trigger data cleanup
-router.post('/run-cleanup', authenticateSuperAdmin, async (req, res) => {
-  try {
-    const { data_type, dry_run = true } = req.body;
-
-    // Get retention settings
-    const settings = await db.query(`
-      SELECT * FROM gdpr_data_retention_settings WHERE data_type = $1
-    `, [data_type]).catch(() => ({ rows: [] }));
-
-    if (settings.rows.length === 0) {
-      return res.status(400).json({ error: 'No retention settings found for this data type' });
-    }
-
-    const { retention_days } = settings.rows[0];
-
-    // Count records that would be deleted
-    let countQuery = '';
-    switch (data_type) {
-      case 'audit_logs':
-        countQuery = `SELECT COUNT(*) FROM sa_audit_logs WHERE created_at < NOW() - INTERVAL '${retention_days} days'`;
-        break;
-      case 'user_sessions':
-        countQuery = `SELECT COUNT(*) FROM user_sessions WHERE last_activity_at < NOW() - INTERVAL '${retention_days} days'`;
-        break;
-      default:
-        return res.status(400).json({ error: 'Unknown data type' });
-    }
-
-    const countResult = await db.query(countQuery).catch(() => ({ rows: [{ count: 0 }] }));
-    const recordCount = parseInt(countResult.rows[0].count, 10);
-
-    if (dry_run) {
-      res.json({
-        dry_run: true,
-        data_type,
-        retention_days,
-        records_to_delete: recordCount,
-      });
-    } else {
-      // Actually delete the records
-      let deleteQuery = '';
-      switch (data_type) {
-        case 'audit_logs':
-          deleteQuery = `DELETE FROM sa_audit_logs WHERE created_at < NOW() - INTERVAL '${retention_days} days'`;
-          break;
-        case 'user_sessions':
-          deleteQuery = `DELETE FROM user_sessions WHERE last_activity_at < NOW() - INTERVAL '${retention_days} days'`;
-          break;
-      }
-
-      await db.query(deleteQuery).catch(() => {});
-
-      res.json({
-        dry_run: false,
-        data_type,
-        records_deleted: recordCount,
+    if (!['pending', 'processing'].includes(request.status)) {
+      return res.status(400).json({
+        error: `Request is already '${request.status}', cannot approve again`,
       });
     }
+
+    const exportData = await buildDataExport({ adminId: request.user_id });
+
+    // Written to a PRIVATE directory, NOT backend/uploads (which is served
+    // publicly via express.static — see index.js `/uploads`). PII must only
+    // ever be reachable through the authenticated download route in
+    // gdpr.js (GET /api/gdpr/download-export/:id), never by a guessable
+    // static URL.
+    await fs.mkdir(GDPR_EXPORT_DIR, { recursive: true });
+    const filePath = path.join(GDPR_EXPORT_DIR, `${id}.json`);
+    await fs.writeFile(filePath, JSON.stringify(exportData, null, 2), 'utf-8');
+
+    // download_url stores the authenticated API path, not a static file URL.
+    const downloadUrl = `/api/gdpr/download-export/${id}`;
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
+
+    await db.query(
+      `UPDATE gdpr_export_requests
+       SET status = 'completed', processed_at = NOW(), completed_at = NOW(),
+           download_url = $2, expires_at = $3
+       WHERE id = $1`,
+      [id, downloadUrl, expiresAt]
+    );
+
+    await writeAuditLog({
+      actorAdminId: req.superAdmin.id,
+      companyId: request.company_id,
+      actionType: 'gdpr_export_generated',
+      ip: req.ip || req.headers['x-forwarded-for'],
+      userAgent: req.headers['user-agent'],
+      metadata: { request_id: id, download_url: downloadUrl },
+    });
+
+    logger.info('GDPR export generated', { requestId: id, superAdmin: req.superAdmin.email });
+
+    res.json({ ok: true, message: 'Export generated', download_url: downloadUrl, expires_at: expiresAt });
   } catch (error) {
-    console.error('Error running cleanup:', error);
-    res.status(500).json({ error: 'Failed to run cleanup' });
+    logger.error('Error generating GDPR export', { error: error.message, stack: error.stack });
+    res.status(500).json({ error: 'Failed to generate export', detail: error.message });
   }
 });
 

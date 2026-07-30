@@ -4,8 +4,12 @@
  */
 
 import { Router } from 'express';
+import fs from 'fs/promises';
+import path from 'path';
 import { db } from '../db/index.js';
 import { authenticateToken } from '../middleware/auth.js';
+import { GDPR_EXPORT_DIR } from '../services/gdprExportStore.js';
+import { logger } from '../utils/logger.js';
 
 const router = Router();
 
@@ -228,6 +232,60 @@ router.get('/my-data', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('Error fetching user data summary:', error);
     res.status(500).json({ error: 'Failed to fetch data summary' });
+  }
+});
+
+// GET /api/gdpr/download-export/:id - Download own completed export file
+// Authenticated + ownership-checked: only the fm_admin who requested the
+// export (matched by gdpr_export_requests.user_id = req.user.id) can fetch
+// it, and only once it's completed and not expired. This is the only way a
+// GDPR export is ever reachable — the file lives outside the public
+// /uploads static directory specifically so a URL alone can't leak PII.
+router.get('/download-export/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const result = await db.query(
+      `SELECT id, user_id, status, download_url, expires_at
+       FROM gdpr_export_requests
+       WHERE id = $1`,
+      [id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Export request not found' });
+    }
+
+    const exportRequest = result.rows[0];
+
+    if (exportRequest.user_id !== req.user.id) {
+      return res.status(403).json({ error: 'This export does not belong to you' });
+    }
+
+    if (exportRequest.status !== 'completed') {
+      return res.status(400).json({ error: `Export is not ready (status: ${exportRequest.status})` });
+    }
+
+    if (exportRequest.expires_at && new Date(exportRequest.expires_at) < new Date()) {
+      return res.status(410).json({ error: 'This export link has expired. Please request a new export.' });
+    }
+
+    const filePath = path.join(GDPR_EXPORT_DIR, `${id}.json`);
+
+    let fileContents;
+    try {
+      fileContents = await fs.readFile(filePath, 'utf-8');
+    } catch (fileErr) {
+      logger.error('GDPR export file missing on disk', { id, error: fileErr.message });
+      return res.status(500).json({ error: 'Export file could not be found. Contact support.' });
+    }
+
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', `attachment; filename="my-data-export-${id}.json"`);
+    res.send(fileContents);
+  } catch (error) {
+    logger.error('Error downloading GDPR export', { error: error.message });
+    res.status(500).json({ error: 'Failed to download export' });
   }
 });
 

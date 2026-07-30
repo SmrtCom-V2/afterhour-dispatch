@@ -141,7 +141,7 @@ async function wakeStage(incident, stage, role) {
     incident.ai_urgency === 'unclear' ? 'AI IST UNSICHER' : incident.ai_urgency === 'critical' ? 'NOTFALL' : 'DRINGEND';
   const categoryLabel = (incident.issue_category || 'Vorfall').replace(/_/g, ' ');
 
-  await notifyHuman({
+  const notifyResult = await notifyHuman({
     recipient: { name: person.name, phone: person.phone },
     purpose: 'wakeup',
     content: {
@@ -155,6 +155,18 @@ async function wakeStage(incident, stage, role) {
     channels: ['voice_call', 'sms'],
     correlation: { incidentId: incident.id, wakeupStage: stage },
   });
+
+  if (!notifyResult.delivered) {
+    // notifyHuman resolves normally (doesn't throw) when every channel
+    // fails, so this needs an explicit check — otherwise a real emergency's
+    // T+0 page could silently fail (bad number, both providers down) and
+    // the only trace would be a log line, with T+2/5/10 still relying on
+    // the same broken phone/provider to eventually work.
+    await sendOpsAlert(
+      `wakeup_stage_${stage}_undelivered_${incident.id}`,
+      `Wake-up stage ${stage} (${role}) for incident ${incident.id} failed to reach ${person.name || person.phone} on every channel. Real emergency may be unhandled.`,
+    );
+  }
 
   logger.warn(`Incident ${incident.id}: wake-up stage ${stage} (${role}) sent to ${person.name || person.phone}`);
 }

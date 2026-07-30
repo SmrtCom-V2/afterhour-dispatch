@@ -26,7 +26,7 @@ export async function authenticateToken(req, res, next) {
 
     // Verify user still exists
     const result = await db.query(
-      `SELECT fa.id, fa.email, fa.name, fa.fm_company_id, fa.is_admin, fa.is_platform_admin, fc.name as company_name
+      `SELECT fa.id, fa.email, fa.name, fa.fm_company_id, fa.is_admin, fa.is_platform_admin, fa.disabled, fc.name as company_name
        FROM fm_admin fa
        JOIN fm_company fc ON fa.fm_company_id = fc.id
        WHERE fa.id = $1`,
@@ -35,6 +35,18 @@ export async function authenticateToken(req, res, next) {
 
     if (result.rows.length === 0) {
       return res.status(401).json({ error: 'User not found' });
+    }
+
+    // fm_admin.disabled is set both by super-admin "disable user" (saUsers.js)
+    // and by GDPR deletion execution (gdprExecution.js anonymizeFmAdmin) —
+    // previously neither actually revoked access: a JWT issued before
+    // disabling stayed valid until its natural expiry (up to 24h,
+    // config.jwt.expiresIn) because this middleware never re-checked the
+    // flag per-request. Found while testing GDPR deletion end-to-end
+    // (2026-07-29) — deletion anonymized the account but a pre-existing
+    // token could still call authenticated endpoints afterward.
+    if (result.rows[0].disabled) {
+      return res.status(403).json({ error: 'This account has been disabled' });
     }
 
     req.user = result.rows[0];

@@ -76,6 +76,14 @@ export const VerificationPrompts = {
   },
 };
 
+// Played and the call hung up when a call arrives during business hours
+// (outside the pm_company's after-hours window) and the client hasn't
+// opted into always-triage behavior.
+export const BusinessHoursMessages = {
+  de: 'Diese Leitung ist für Notfälle außerhalb der Geschäftszeiten. Bitte kontaktieren Sie Ihre Hausverwaltung während der Geschäftszeiten. Auf Wiederhören.',
+  en: 'This line is for after-hours emergencies. Please contact your property management directly during business hours. Goodbye.',
+};
+
 // OpenAI Provider Implementation
 class OpenAIVoiceProvider {
   constructor(apiKey) {

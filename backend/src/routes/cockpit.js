@@ -111,6 +111,23 @@ router.get('/:token', async (req, res) => {
       [incident.id],
     );
 
+    // Security: cockpit links can be forwarded (single-use-per-decision and
+    // 12h expiry don't stop a *view*, only a second decision). Sensitive
+    // building access codes have no verification gate here by design — the
+    // on-call human needs them regardless of whether the caller was verified
+    // — so the mitigation is an audit trail, not a block: log every view
+    // that actually exposed a code, so a leaked link is at least traceable.
+    const hasSensitiveCodes = [incident.key_safe_code, incident.gate_code, incident.main_entrance_code].some(
+      (v) => v != null && v !== '',
+    );
+    if (hasSensitiveCodes) {
+      await db.query(
+        `INSERT INTO incident_timeline (incident_id, event_type, event_data)
+         VALUES ($1, 'cockpit.codes_viewed', $2)`,
+        [incident.id, JSON.stringify({ viewerRole: tokenRow.role, viewerName: tokenRow.person_name })],
+      );
+    }
+
     res.json({
       incident: {
         id: incident.id,
