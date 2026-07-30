@@ -26,7 +26,7 @@ export async function authenticateToken(req, res, next) {
 
     // Verify user still exists
     const result = await db.query(
-      `SELECT fa.id, fa.email, fa.name, fa.fm_company_id, fa.is_admin, fa.is_platform_admin, fa.disabled, fc.name as company_name
+      `SELECT fa.id, fa.email, fa.name, fa.fm_company_id, fa.is_admin, fa.is_platform_admin, fa.disabled, fa.token_version, fc.name as company_name
        FROM fm_admin fa
        JOIN fm_company fc ON fa.fm_company_id = fc.id
        WHERE fa.id = $1`,
@@ -35,6 +35,14 @@ export async function authenticateToken(req, res, next) {
 
     if (result.rows.length === 0) {
       return res.status(401).json({ error: 'User not found' });
+    }
+
+    // Every password change bumps fm_admin.token_version (see auth.js
+    // change-password route); a token signed with an older version was
+    // issued before that change and must die immediately, not ride out
+    // its remaining ~24h natural expiry (config.jwt.expiresIn).
+    if (payload.tokenVersion !== result.rows[0].token_version) {
+      return res.status(401).json({ error: 'Session expired, please log in again' });
     }
 
     // fm_admin.disabled is set both by super-admin "disable user" (saUsers.js)
@@ -63,9 +71,10 @@ export async function authenticateToken(req, res, next) {
 }
 
 export function generateToken(userId, email, options = {}) {
-  // options: { role }
+  // options: { role, tokenVersion }
   const payload = { userId, email };
   if (options.role) payload.role = options.role;
+  if (options.tokenVersion !== undefined) payload.tokenVersion = options.tokenVersion;
   return jwt.sign(
     payload,
     config.jwt.secret,

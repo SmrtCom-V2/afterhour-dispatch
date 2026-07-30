@@ -9,22 +9,41 @@ export function Incidents() {
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('all');
   const [selectedPm, setSelectedPm] = useState('');
+  const [dateFrom, setDateFrom] = useState('');
+  const [missingReportOnly, setMissingReportOnly] = useState(false);
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const { t, language } = useLanguage();
 
   useEffect(() => {
-    // Check for pmCompanyId in URL params
+    // Check for pmCompanyId/status/isEmergency/dateFrom/missingReport in URL
+    // params — lets the dashboard's stat tiles link straight into a
+    // pre-filtered list instead of dumping the user on the unfiltered
+    // "all incidents" view.
     const pmIdParam = searchParams.get('pmCompanyId');
     if (pmIdParam) {
       setSelectedPm(pmIdParam);
+    }
+    const statusParam = searchParams.get('status');
+    if (statusParam === 'open') {
+      setFilter('open');
+    }
+    if (searchParams.get('isEmergency') === 'true') {
+      setFilter('emergency');
+    }
+    const dateFromParam = searchParams.get('dateFrom');
+    if (dateFromParam) {
+      setDateFrom(dateFromParam);
+    }
+    if (searchParams.get('missingReport') === 'true') {
+      setMissingReportOnly(true);
     }
     loadPmCompanies();
   }, [searchParams]);
 
   useEffect(() => {
     loadIncidents();
-  }, [filter, selectedPm]);
+  }, [filter, selectedPm, dateFrom, missingReportOnly]);
 
   const loadPmCompanies = async () => {
     try {
@@ -42,6 +61,8 @@ export function Incidents() {
       if (filter === 'open') params.status = 'open';
       if (filter === 'emergency') params.isEmergency = 'true';
       if (selectedPm) params.pmCompanyId = selectedPm;
+      if (dateFrom) params.dateFrom = dateFrom;
+      if (missingReportOnly) params.missingReport = 'true';
 
       const data = await api.getIncidents(params);
       setIncidents(data.incidents);

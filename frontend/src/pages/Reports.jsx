@@ -78,7 +78,15 @@ export function Reports() {
                 <td>{report.sent_to || '-'}</td>
                 <td>
                   {report.sent_at ? (
-                    <span className="badge badge-success">{t('sent')}</span>
+                    <div>
+                      <span className="badge badge-success">{t('sent')}</span>
+                      <div className="text-sm text-secondary" style={{ marginTop: 4 }}>
+                        {new Date(report.sent_at).toLocaleString(language === 'de' ? 'de-DE' : 'en-US', {
+                          dateStyle: 'medium',
+                          timeStyle: 'short',
+                        })}
+                      </div>
+                    </div>
                   ) : (
                     <span className="badge badge-pending">{t('pending')}</span>
                   )}

@@ -4,6 +4,7 @@
  */
 
 import { useOnboarding } from '../../context/OnboardingContext';
+import { useLanguage } from '../../context/LanguageContext';
 
 const RocketIcon = () => (
   <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
@@ -31,6 +32,7 @@ const MapIcon = () => (
 
 export function WelcomeModal() {
   const { showWelcome, completeWelcome } = useOnboarding();
+  const { t } = useLanguage();
 
   if (!showWelcome) return null;
 
@@ -69,10 +71,10 @@ export function WelcomeModal() {
             <RocketIcon />
           </div>
           <h2 style={{ fontSize: 24, fontWeight: 700, marginBottom: 8 }}>
-            Welcome to After Hour Dispatch!
+            {t('welcomeModalTitle')}
           </h2>
           <p style={{ opacity: 0.9, fontSize: 15, margin: 0 }}>
-            Your after-hours emergency dispatch system is ready
+            {t('welcomeModalSubtitle')}
           </p>
         </div>
 
@@ -87,8 +89,7 @@ export function WelcomeModal() {
               textAlign: 'center',
             }}
           >
-            Let's get your account set up so you can start managing after-hours
-            emergencies for your clients.
+            {t('welcomeModalBody')}
           </p>
 
           {/* Options */}
@@ -107,7 +108,7 @@ export function WelcomeModal() {
               onClick={() => completeWelcome(true)}
             >
               <MapIcon />
-              Take a Quick Tour
+              {t('takeQuickTour')}
             </button>
 
             <button
@@ -124,7 +125,7 @@ export function WelcomeModal() {
               onClick={() => completeWelcome(false)}
             >
               <ChecklistIcon />
-              Skip Tour, Show Me the Checklist
+              {t('skipTourShowChecklist')}
             </button>
           </div>
 
@@ -145,7 +146,7 @@ export function WelcomeModal() {
                 marginBottom: 12,
               }}
             >
-              What you'll set up:
+              {t('whatYoullSetUp')}
             </p>
             <ul
               style={{
@@ -157,10 +158,10 @@ export function WelcomeModal() {
               }}
             >
               {[
-                'Add PM companies (your clients)',
-                'Add service providers (plumbers, electricians)',
-                'Set up your team members',
-                'Configure on-call schedules',
+                t('welcomeSetupPm'),
+                t('welcomeSetupSp'),
+                t('welcomeSetupTeam'),
+                t('welcomeSetupSchedule'),
               ].map((item, i) => (
                 <li
                   key={i}

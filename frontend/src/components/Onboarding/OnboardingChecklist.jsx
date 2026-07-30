@@ -6,6 +6,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useOnboarding } from '../../context/OnboardingContext';
+import { useLanguage } from '../../context/LanguageContext';
 
 const CheckIcon = () => (
   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
@@ -47,6 +48,7 @@ const ArrowRightIcon = () => (
 
 export function OnboardingChecklist() {
   const navigate = useNavigate();
+  const { t } = useLanguage();
   const {
     steps,
     progress,
@@ -121,7 +123,7 @@ export function OnboardingChecklist() {
                 marginBottom: 2,
               }}
             >
-              Complete Your Setup
+              {t('completeYourSetup')}
             </h3>
             <p
               style={{
@@ -130,7 +132,9 @@ export function OnboardingChecklist() {
                 margin: 0,
               }}
             >
-              {completedDisplaySteps} of {displaySteps.length} steps completed
+              {(t('stepsCompleted') || '{0} of {1} steps completed')
+                .replace('{0}', completedDisplaySteps)
+                .replace('{1}', displaySteps.length)}
             </p>
           </div>
         </div>
@@ -150,7 +154,7 @@ export function OnboardingChecklist() {
             }}
           >
             <PlayIcon />
-            Tour
+            {t('tour')}
           </button>
           <button
             onClick={(e) => {
@@ -168,7 +172,7 @@ export function OnboardingChecklist() {
               justifyContent: 'center',
               borderRadius: 4,
             }}
-            title="Dismiss checklist"
+            title={t('dismissChecklist')}
           >
             <CloseIcon />
           </button>
@@ -298,7 +302,7 @@ export function OnboardingChecklist() {
                   className="badge badge-success"
                   style={{ fontSize: 11 }}
                 >
-                  Done
+                  {t('done')}
                 </span>
               )}
             </div>

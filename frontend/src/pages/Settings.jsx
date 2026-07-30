@@ -142,6 +142,7 @@ export function Settings() {
     fmOncallName: '',
     aiConfidenceThreshold: 80,
     ownerEmail: '',
+    unknownCallerAlwaysEmergency: true,
   });
 
   // Profile
@@ -201,6 +202,7 @@ export function Settings() {
         fmOncallName: companyRes.company.fm_oncall_name || '',
         aiConfidenceThreshold: companyRes.company.ai_confidence_threshold || 80,
         ownerEmail: companyRes.company.owner_email || '',
+        unknownCallerAlwaysEmergency: companyRes.company.unknown_caller_always_emergency !== false,
       });
 
       setProfile(profileRes.profile);
@@ -619,6 +621,22 @@ export function Settings() {
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11 }} className="text-muted">
                   <span>{t('moreEscalations')}</span>
                   <span>{t('fewerEscalations')}</span>
+                </div>
+              </div>
+
+              <div className="form-group">
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={companyForm.unknownCallerAlwaysEmergency}
+                    onChange={(e) => setCompanyForm({ ...companyForm, unknownCallerAlwaysEmergency: e.target.checked })}
+                  />
+                  <span className="form-label" style={{ margin: 0 }}>
+                    {t('unknownCallerAlwaysEmergency') || 'Always treat unrecognized callers as a possible emergency'}
+                  </span>
+                </label>
+                <div style={{ fontSize: 11, marginTop: 4 }} className="text-muted">
+                  {t('unknownCallerAlwaysEmergencyHint') || "On (default): if a caller's number doesn't match any tenant on file, we still notify your on-call staff so a real emergency is never missed. Off: an unrecognized caller instead hears the business-hours message during business hours."}
                 </div>
               </div>
 

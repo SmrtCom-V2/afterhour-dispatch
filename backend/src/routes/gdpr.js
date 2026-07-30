@@ -69,7 +69,8 @@ router.get('/my-requests', authenticateToken, async (req, res) => {
     `, [req.user.id]);
 
     const deletionRequests = await db.query(`
-      SELECT id, status, created_at, processed_at, rejection_reason
+      SELECT id, status, created_at, processed_at, rejection_reason,
+             created_at + INTERVAL '72 hours' AS deadline_at
       FROM gdpr_deletion_requests
       WHERE user_id = $1
       ORDER BY created_at DESC

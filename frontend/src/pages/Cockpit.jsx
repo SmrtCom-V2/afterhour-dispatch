@@ -122,6 +122,11 @@ export function Cockpit() {
             📞 Mieter anrufen {caller.name ? `(${caller.name})` : ''}
           </a>
         )}
+        {(building.gateCode || building.mainEntranceCode || building.keySafeCode) && (
+          <p style={s.forwardWarning}>
+            ⚠️ Enthält Zugangscodes — diesen Link nicht weiterleiten.
+          </p>
+        )}
         <div style={s.accessGrid}>
           <AccessItem label="Wasserhaupthahn" value={building.waterShutoff} />
           <AccessItem label="Gashaupthahn" value={building.gasShutoff} />
@@ -333,6 +338,16 @@ const s = {
   accessLabel: { display: 'block', fontSize: '11px', color: '#94a3b8', textTransform: 'uppercase' },
   accessValue: { fontSize: '15px', fontWeight: 600 },
   note: { fontSize: '14px', color: '#fbbf24', marginTop: '10px' },
+  forwardWarning: {
+    fontSize: '13px',
+    color: '#fca5a5',
+    background: '#450a0a',
+    border: '1px solid #7f1d1d',
+    borderRadius: '6px',
+    padding: '8px 10px',
+    marginTop: '10px',
+    marginBottom: '4px',
+  },
   secondaryLink: { display: 'block', color: '#60a5fa', textDecoration: 'none', marginTop: '10px', fontSize: '15px' },
   spCard: { display: 'flex', flexDirection: 'column', gap: '4px', background: '#0f172a', padding: '12px', borderRadius: '8px', fontSize: '16px' },
   spTrade: { fontSize: '13px', color: '#94a3b8', textTransform: 'uppercase' },

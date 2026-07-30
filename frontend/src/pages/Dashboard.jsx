@@ -142,6 +142,7 @@ const ActivityChart = ({ data, t }) => {
       <div className="bar-chart">
         {data.map((day, i) => (
           <div key={i} className="bar-chart-column">
+            <span className="bar-chart-value">{day.calls}</span>
             <div
               className="bar-chart-bar"
               style={{ height: `${(day.calls / maxValue) * 180}px` }}
@@ -231,23 +232,31 @@ export function Dashboard() {
     });
   };
 
-  // Mock data for charts (replace with real data when available)
-  const weeklyData = [
-    { label: t('mon'), calls: stats?.week_calls ? Math.floor(stats.week_calls * 0.12) : 5 },
-    { label: t('tue'), calls: stats?.week_calls ? Math.floor(stats.week_calls * 0.18) : 8 },
-    { label: t('wed'), calls: stats?.week_calls ? Math.floor(stats.week_calls * 0.15) : 6 },
-    { label: t('thu'), calls: stats?.week_calls ? Math.floor(stats.week_calls * 0.20) : 9 },
-    { label: t('fri'), calls: stats?.week_calls ? Math.floor(stats.week_calls * 0.14) : 7 },
-    { label: t('sat'), calls: stats?.week_calls ? Math.floor(stats.week_calls * 0.11) : 4 },
-    { label: t('sun'), calls: stats?.week_calls ? Math.floor(stats.week_calls * 0.10) : 3 },
-  ];
+  // Real per-day call counts for the last 7 days, from the backend. 0 when no calls happened.
+  // Range starts at max(7 days ago, company signup date) — a company that
+  // signed up today must not show 6 days that happened before it existed
+  // (confirmed live: a fresh account showed Mon-Sun even though the company
+  // was created that same day).
+  const dailyCallCounts = stats?.daily_call_counts || {};
+  const dayLabelKeys = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+  const sevenDaysAgo = new Date();
+  sevenDaysAgo.setHours(0, 0, 0, 0);
+  sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6);
+  const companyCreatedAt = stats?.company_created_at ? new Date(stats.company_created_at) : null;
+  if (companyCreatedAt) companyCreatedAt.setHours(0, 0, 0, 0);
+  const rangeStart = companyCreatedAt && companyCreatedAt > sevenDaysAgo ? companyCreatedAt : sevenDaysAgo;
+  const daysInRange = Math.round((new Date().setHours(0, 0, 0, 0) - rangeStart.getTime()) / 86400000) + 1;
+  const weeklyData = Array.from({ length: daysInRange }, (_, i) => {
+    const d = new Date(rangeStart);
+    d.setDate(d.getDate() + i);
+    const isoDate = d.toISOString().slice(0, 10);
+    return { label: t(dayLabelKeys[d.getDay()]), calls: dailyCallCounts[isoDate] || 0 };
+  });
 
-  const sparklineData = [3, 5, 4, 7, 5, 8, 6, 9, 7, stats?.tonight_calls || 4];
-
-  // Calculate response rate
+  // Calculate response rate — 0 (not a fabricated placeholder) when there's no real call history yet
   const responseRate = stats?.month_calls
     ? Math.round(((stats.month_calls - (stats.missing_reports || 0)) / stats.month_calls) * 100)
-    : 95;
+    : 0;
 
   return (
     <div>
@@ -279,11 +288,21 @@ export function Dashboard() {
             <span className="live-indicator-value">{stats?.tonight_calls || 0}</span>
             <span className="live-indicator-label">{t('callsTonight')}</span>
           </div>
-          <div className={`live-indicator ${totalOpenIncidents > 0 ? 'urgent' : ''}`}>
+          <div
+            className={`live-indicator clickable ${totalOpenIncidents > 0 ? 'urgent' : ''}`}
+            onClick={() => navigate('/incidents?status=open')}
+            role="button"
+            tabIndex={0}
+          >
             <span className="live-indicator-value">{totalOpenIncidents}</span>
             <span className="live-indicator-label">{t('openIncidents')}</span>
           </div>
-          <div className="live-indicator">
+          <div
+            className="live-indicator clickable"
+            onClick={() => navigate('/pm-companies')}
+            role="button"
+            tabIndex={0}
+          >
             <span className="live-indicator-value">{pmStats.length}</span>
             <span className="live-indicator-label">{t('activePMs')}</span>
           </div>
@@ -292,7 +311,12 @@ export function Dashboard() {
 
       {/* KPI Cards Grid */}
       <div className="dashboard-grid">
-        <div className="stat-card-modern primary">
+        <div
+          className="stat-card-modern primary clickable"
+          onClick={() => navigate('/pm-companies')}
+          role="button"
+          tabIndex={0}
+        >
           <div className="stat-card-header-modern">
             <div className="stat-card-icon-modern primary">
               <CompanyIcon />
@@ -305,7 +329,12 @@ export function Dashboard() {
           </div>
         </div>
 
-        <div className="stat-card-modern success">
+        <div
+          className="stat-card-modern success clickable"
+          onClick={() => navigate('/buildings')}
+          role="button"
+          tabIndex={0}
+        >
           <div className="stat-card-header-modern">
             <div className="stat-card-icon-modern success">
               <BuildingIcon />
@@ -319,7 +348,12 @@ export function Dashboard() {
           </div>
         </div>
 
-        <div className="stat-card-modern primary">
+        <div
+          className="stat-card-modern primary clickable"
+          onClick={() => navigate('/incidents')}
+          role="button"
+          tabIndex={0}
+        >
           <div className="stat-card-header-modern">
             <div className="stat-card-icon-modern primary">
               <PhoneIcon />
@@ -327,10 +361,15 @@ export function Dashboard() {
           </div>
           <div className="stat-card-value-modern">{stats?.tonight_calls || 0}</div>
           <div className="stat-card-label-modern">{t('callsToday')}</div>
-          <Sparkline data={sparklineData} color="primary" />
+          <Sparkline data={weeklyData.map(d => d.calls)} color="primary" />
         </div>
 
-        <div className={`stat-card-modern ${totalOpenIncidents > 0 ? 'danger' : 'success'}`}>
+        <div
+          className={`stat-card-modern clickable ${totalOpenIncidents > 0 ? 'danger' : 'success'}`}
+          onClick={() => navigate('/incidents?status=open')}
+          role="button"
+          tabIndex={0}
+        >
           <div className="stat-card-header-modern">
             <div className={`stat-card-icon-modern ${totalOpenIncidents > 0 ? 'danger' : 'success'}`}>
               <AlertIcon />
@@ -358,21 +397,45 @@ export function Dashboard() {
 
       {/* Quick Stats Row */}
       <div className="quick-stats-row">
-        <div className="quick-stat-item">
+        <div
+          className="quick-stat-item clickable"
+          onClick={() => navigate(`/incidents?dateFrom=${sevenDaysAgo.toISOString().slice(0, 10)}`)}
+          role="button"
+          tabIndex={0}
+        >
           <div className="quick-stat-label">{t('thisWeek')}</div>
           <div className="quick-stat-value">{stats?.week_calls || 0} {t('calls')}</div>
         </div>
-        <div className="quick-stat-item">
+        <div
+          className="quick-stat-item clickable"
+          onClick={() => {
+            const monthAgo = new Date();
+            monthAgo.setDate(monthAgo.getDate() - 30);
+            navigate(`/incidents?dateFrom=${monthAgo.toISOString().slice(0, 10)}`);
+          }}
+          role="button"
+          tabIndex={0}
+        >
           <div className="quick-stat-label">{t('thisMonth')}</div>
           <div className="quick-stat-value">{stats?.month_calls || 0} {t('calls')}</div>
         </div>
-        <div className="quick-stat-item">
+        <div
+          className="quick-stat-item clickable"
+          onClick={() => navigate('/incidents?isEmergency=true')}
+          role="button"
+          tabIndex={0}
+        >
           <div className="quick-stat-label">{t('emergencies')}</div>
           <div className={`quick-stat-value ${(stats?.emergencies || 0) > 0 ? 'danger' : ''}`}>
             {stats?.emergencies || 0}
           </div>
         </div>
-        <div className="quick-stat-item">
+        <div
+          className="quick-stat-item clickable"
+          onClick={() => navigate('/incidents?missingReport=true')}
+          role="button"
+          tabIndex={0}
+        >
           <div className="quick-stat-label">{t('missingReports')}</div>
           <div className={`quick-stat-value ${(stats?.missing_reports || 0) > 0 ? 'danger' : ''}`}>
             {stats?.missing_reports || 0}

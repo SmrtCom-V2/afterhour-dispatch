@@ -85,9 +85,17 @@ router.get('/deletion-requests', async (req, res) => {
       where = `WHERE gdr.status = $1`;
     }
 
+    // deadline_at/is_overdue are computed here (not stored columns) — GDPR
+    // Art. 12(3) gives 72h for this specific flow (see CLAUDE.md), and the
+    // deadline is fully derivable from created_at, so no migration needed.
+    // Only pending/processing requests can be overdue; anything already
+    // processed has a real processed_at to judge instead.
     const result = await db.query(
       `SELECT gdr.id, gdr.user_id, gdr.company_id, gdr.status, gdr.reason,
               gdr.created_at, gdr.processed_at, gdr.rejection_reason,
+              gdr.created_at + INTERVAL '72 hours' AS deadline_at,
+              (gdr.status IN ('pending', 'processing')
+                AND gdr.created_at + INTERVAL '72 hours' < NOW()) AS is_overdue,
               fa.email AS admin_email, fa.name AS admin_name, fa.is_admin AS admin_is_owner,
               fc.name AS company_name
        FROM gdpr_deletion_requests gdr

@@ -167,7 +167,7 @@ router.get('/:id/pdf', async (req, res) => {
     const pdfBuffer = await generateMorningReport(report.pm_company_id, report.report_date);
 
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="report-${report.report_date}.pdf"`);
+    res.setHeader('Content-Disposition', `inline; filename="report-${report.report_date}.pdf"`);
     res.send(pdfBuffer);
   } catch (error) {
     logger.error('Error generating PDF', { error: error.message });

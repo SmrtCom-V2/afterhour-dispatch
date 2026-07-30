@@ -40,6 +40,7 @@ CREATE TABLE fm_admin (
     is_admin BOOLEAN NOT NULL DEFAULT FALSE,
     is_platform_admin BOOLEAN NOT NULL DEFAULT FALSE,
     is_super_admin BOOLEAN NOT NULL DEFAULT FALSE,
+    token_version INTEGER NOT NULL DEFAULT 1,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
@@ -127,6 +128,7 @@ CREATE TABLE call (
     ended_at TIMESTAMP WITH TIME ZONE,
     duration_seconds INTEGER,
     transcript TEXT,
+    end_reason VARCHAR(30), -- added live July 26 (ALTER TABLE) for voice-gateway call closeout
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 

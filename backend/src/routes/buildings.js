@@ -13,13 +13,22 @@ const router = Router();
 // All routes require authentication
 router.use(authenticateToken);
 
+// Fields safe to return in list/summary views — excludes access-sensitive
+// columns (key_safe_code, gate_code, main_entrance_code) and internal notes,
+// which only the single-building detail view (an explicit, deliberate fetch) returns.
+const BUILDING_LIST_FIELDS = `
+  b.id, b.pm_company_id, b.name, b.address, b.city, b.postal_code, b.country,
+  b.building_type, b.total_units, b.total_floors, b.has_elevator, b.status,
+  b.created_at, b.updated_at
+`;
+
 // GET /api/buildings - List all buildings for FM company
 router.get('/', async (req, res) => {
   try {
     const { pmCompanyId } = req.query;
 
     let query = `
-      SELECT b.*, pm.name as pm_company_name, pm.contact_email as pm_email,
+      SELECT ${BUILDING_LIST_FIELDS}, pm.name as pm_company_name, pm.contact_email as pm_email,
               (SELECT COUNT(*) FROM building_service_provider WHERE building_id = b.id) as sp_count,
               (SELECT COUNT(*) FROM tenant WHERE building_id = b.id AND status = 'active') as tenant_count
        FROM building b
@@ -49,7 +58,10 @@ router.get('/:id', async (req, res) => {
   try {
     const { id } = req.params;
 
-    // Get building with PM info
+    // Get building with PM info — full row (including access codes) is
+    // intentional here: this is a single, explicit, authenticated fetch of
+    // one building, not the bulk list above where the same fields would be
+    // over-exposed to every list/search caller.
     const buildingResult = await db.query(
       `SELECT b.*, pm.name as pm_company_name, pm.contact_email as pm_email, pm.id as pm_company_id
        FROM building b

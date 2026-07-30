@@ -147,6 +147,13 @@ class ApiClient {
     });
   }
 
+  async bulkImportBuildings(pmCompanyId, buildings) {
+    return this.request('/buildings/bulk', {
+      method: 'POST',
+      body: JSON.stringify({ pmCompanyId, buildings }),
+    });
+  }
+
   // Service Providers
   async getServiceProviders(params = {}) {
     const query = new URLSearchParams(params).toString();

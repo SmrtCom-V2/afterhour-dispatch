@@ -129,29 +129,41 @@ const isPastWeek = (startDate) => {
   return start.getTime() < weekStart.getTime();
 };
 
-const generateWeeks = (startOffset = 0, numWeeks = 12, language = 'en') => {
+// Every week whose Sun-Sat span overlaps at all with the given calendar
+// month — a normal month has 4-6 such weeks (a month never spans more than
+// 6), never a fixed count. Previously this always generated a flat 12
+// weeks (~3 months) regardless of navigation, and the month header only
+// showed the label of the FIRST week — so a single "month" view silently
+// rendered up to 3 real months of rows in one long list (confirmed live:
+// a fresh account with July 26 as its first real week showed rows all the
+// way out to October 17).
+const generateWeeksForMonth = (monthDate) => {
   const weeks = [];
-  const today = new Date();
-  const baseWeekStart = getWeekStart(today);
-  // Move base to startOffset weeks from current
-  const offsetStart = new Date(baseWeekStart.getTime() + startOffset * 7 * 24 * 60 * 60 * 1000);
+  const firstOfMonth = new Date(monthDate.getFullYear(), monthDate.getMonth(), 1);
+  const lastOfMonth = new Date(monthDate.getFullYear(), monthDate.getMonth() + 1, 0);
+  let cursor = getWeekStart(firstOfMonth);
 
-  for (let i = 0; i < numWeeks; i++) {
-    const start = new Date(offsetStart.getTime() + i * 7 * 24 * 60 * 60 * 1000);
+  while (cursor <= lastOfMonth) {
+    const start = new Date(cursor);
     const end = getWeekEnd(start);
-    weeks.push({
-      start: toDateKey(start),
-      end: toDateKey(end),
-      startDate: start,
-      endDate: end,
-      label: `${formatDate(start, language)} - ${formatDate(end, language)}`,
-      fullLabel: `${formatDateFull(start, language)} - ${formatDateFull(end, language)}`,
-      isCurrent: isCurrentWeek(start),
-      isPast: isPastWeek(start),
-      weekNumber: Math.ceil((start - new Date(start.getFullYear(), 0, 1)) / (7 * 24 * 60 * 60 * 1000)),
-    });
+    weeks.push({ start, end });
+    cursor = new Date(cursor.getTime() + 7 * 24 * 60 * 60 * 1000);
   }
   return weeks;
+};
+
+const generateWeeks = (monthDate, language = 'en') => {
+  return generateWeeksForMonth(monthDate).map(({ start, end }) => ({
+    start: toDateKey(start),
+    end: toDateKey(end),
+    startDate: start,
+    endDate: end,
+    label: `${formatDate(start, language)} - ${formatDate(end, language)}`,
+    fullLabel: `${formatDateFull(start, language)} - ${formatDateFull(end, language)}`,
+    isCurrent: isCurrentWeek(start),
+    isPast: isPastWeek(start),
+    weekNumber: Math.ceil((start - new Date(start.getFullYear(), 0, 1)) / (7 * 24 * 60 * 60 * 1000)),
+  }));
 };
 
 export function Employees() {
@@ -170,10 +182,17 @@ export function Employees() {
   const [activeTab, setActiveTab] = useState('rotation');
   const [search, setSearch] = useState('');
 
-  // Rotation state - can scroll through months
-  const [weekOffset, setWeekOffset] = useState(0); // 0 = starting from current week
+  // Rotation state — one calendar month visible at a time, paged via
+  // monthOffset (0 = current month, 1 = next month, -1 = previous month).
+  const [monthOffset, setMonthOffset] = useState(0);
   const [rotations, setRotations] = useState({});
-  const weeks = useMemo(() => generateWeeks(weekOffset, 12, language), [weekOffset, language]);
+  const visibleMonth = useMemo(() => {
+    const d = new Date();
+    d.setDate(1); // avoid month-length overflow (e.g. Jan 31 + 1 month skipping to Mar)
+    d.setMonth(d.getMonth() + monthOffset);
+    return d;
+  }, [monthOffset]);
+  const weeks = useMemo(() => generateWeeks(visibleMonth, language), [visibleMonth, language]);
 
   // Employee modal
   const [showEmployeeModal, setShowEmployeeModal] = useState(false);
@@ -200,9 +219,15 @@ export function Employees() {
       // not actually on call. The wake-up engine reads the same table these
       // endpoints write, so what this calendar shows is now what happens
       // at 3am.
-      const rangeWeeks = generateWeeks(-4, 24);
-      const from = rangeWeeks[0].start;
-      const to = rangeWeeks[rangeWeeks.length - 1].end;
+      //
+      // Prefetch a wide window (4 weeks back, ~5 months forward) independent
+      // of the currently-visible month, so paging Prev/Next doesn't need a
+      // fresh API round-trip for every month — this is just the data cache,
+      // NOT what's rendered (the UI only ever shows one calendar month's
+      // worth of weeks, see generateWeeks(visibleMonth, ...) above).
+      const today = new Date();
+      const from = toDateKey(new Date(getWeekStart(today).getTime() - 4 * 7 * 24 * 60 * 60 * 1000));
+      const to = toDateKey(new Date(getWeekStart(today).getTime() + 20 * 7 * 24 * 60 * 60 * 1000));
 
       const [empData, schedData, onCallData, weekAssignments] = await Promise.all([
         api.getEmployees(),
@@ -241,23 +266,10 @@ export function Employees() {
 
   const onCallEmployees = employees.filter(e => e.can_be_oncall && e.is_active);
 
-  // Group weeks by month for display
-  const weeksByMonth = useMemo(() => {
-    const groups = {};
-    weeks.forEach(week => {
-      const monthKey = getMonthYear(week.startDate, language);
-      if (!groups[monthKey]) {
-        groups[monthKey] = [];
-      }
-      groups[monthKey].push(week);
-    });
-    return groups;
-  }, [weeks, language]);
-
   // Navigation
-  const goToPreviousMonth = () => setWeekOffset(prev => prev - 4);
-  const goToNextMonth = () => setWeekOffset(prev => prev + 4);
-  const goToToday = () => setWeekOffset(0);
+  const goToPreviousMonth = () => setMonthOffset(prev => prev - 1);
+  const goToNextMonth = () => setMonthOffset(prev => prev + 1);
+  const goToToday = () => setMonthOffset(0);
 
   // Employee handlers
   const handleAddEmployee = () => {
@@ -520,9 +532,9 @@ export function Employees() {
 
             <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
               <span style={{ fontWeight: 600, fontSize: 16 }}>
-                {Object.keys(weeksByMonth)[0]}
+                {getMonthYear(visibleMonth, language)}
               </span>
-              {weekOffset !== 0 && (
+              {monthOffset !== 0 && (
                 <button
                   className="btn btn-sm btn-secondary"
                   onClick={goToToday}

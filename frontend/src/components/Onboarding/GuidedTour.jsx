@@ -5,6 +5,7 @@
 
 import { useEffect, useState, useRef } from 'react';
 import { useOnboarding } from '../../context/OnboardingContext';
+import { useLanguage } from '../../context/LanguageContext';
 
 const ArrowLeftIcon = () => (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -37,6 +38,7 @@ export function GuidedTour() {
     prevTourStep,
     skipTour,
   } = useOnboarding();
+  const { t } = useLanguage();
 
   const [tooltipPosition, setTooltipPosition] = useState({ top: 0, left: 0 });
   const [highlightRect, setHighlightRect] = useState(null);
@@ -228,7 +230,9 @@ export function GuidedTour() {
                 color: 'var(--color-text-muted)',
               }}
             >
-              Step {tourStep + 1} of {tourSteps.length}
+              {(t('tourStepOf') || 'Step {0} of {1}')
+                .replace('{0}', tourStep + 1)
+                .replace('{1}', tourSteps.length)}
             </span>
           </div>
           <button
@@ -244,7 +248,7 @@ export function GuidedTour() {
               justifyContent: 'center',
               borderRadius: 4,
             }}
-            title="Skip tour"
+            title={t('tourSkip')}
           >
             <CloseIcon />
           </button>
@@ -296,7 +300,7 @@ export function GuidedTour() {
             }}
           >
             <ArrowLeftIcon />
-            Back
+            {t('tourPrevious')}
           </button>
 
           <button
@@ -308,7 +312,7 @@ export function GuidedTour() {
               gap: 6,
             }}
           >
-            {tourStep === tourSteps.length - 1 ? 'Finish' : 'Next'}
+            {tourStep === tourSteps.length - 1 ? t('tourFinish') : t('tourNext')}
             {tourStep < tourSteps.length - 1 && <ArrowRightIcon />}
           </button>
         </div>

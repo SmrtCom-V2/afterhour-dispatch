@@ -21,6 +21,7 @@ import { config } from './config/index.js';
 import { logger } from './utils/logger.js';
 import { db } from './db/index.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
+import { requestId } from './middleware/requestId.js';
 import { authenticateToken } from './middleware/auth.js';
 import { requireActiveSubscription } from './middleware/requireActiveSubscription.js';
 import { initializeScheduler } from './jobs/scheduler.js';
@@ -76,6 +77,11 @@ const app = express();
 // by real client IP — discovered live July 18 once external Twilio webhook
 // traffic first hit this server. `1` = trust exactly one hop (nginx).
 app.set('trust proxy', 1);
+
+// Assigns/propagates a correlation ID before anything else runs, so every
+// later middleware and route handler can log req.id and one request's
+// path through dispatch/telephony/DB can be reconstructed from logs alone.
+app.use(requestId);
 
 // Security middleware
 app.use(helmet({

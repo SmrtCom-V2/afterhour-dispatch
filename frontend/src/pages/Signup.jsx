@@ -75,7 +75,8 @@ export function Signup() {
     password: '',
     confirmPassword: '',
     adminName: '',
-    oncallPhone: ''
+    oncallPhone: '',
+    termsAccepted: false
   });
 
   // Resend timer countdown
@@ -131,6 +132,10 @@ export function Signup() {
     }
     if (formData.password !== formData.confirmPassword) {
       setError(t('passwordsMustMatch') || 'Passwords must match');
+      return false;
+    }
+    if (!formData.termsAccepted) {
+      setError(t('mustAcceptTerms') || 'You must accept the Terms of Service to continue');
       return false;
     }
     return true;
@@ -311,7 +316,8 @@ export function Signup() {
           password: formData.password,
           adminName: formData.adminName || undefined,
           oncallPhone: formData.oncallPhone || undefined,
-          emailVerified: true // Email already verified in step 2
+          emailVerified: true, // Email already verified in step 2
+          termsAccepted: formData.termsAccepted
         })
       });
 
@@ -808,7 +814,36 @@ export function Signup() {
               </p>
             </div>
 
-            <div style={{ display: 'flex', gap: '12px', marginTop: '20px' }}>
+            <label style={{
+              display: 'flex',
+              alignItems: 'flex-start',
+              gap: '10px',
+              marginTop: '20px',
+              cursor: 'pointer',
+              fontSize: '13px',
+              color: 'var(--color-text-secondary)',
+              lineHeight: 1.5
+            }}>
+              <input
+                type="checkbox"
+                checked={formData.termsAccepted}
+                onChange={(e) => updateField('termsAccepted', e.target.checked)}
+                style={{ marginTop: '2px', width: '16px', height: '16px', flexShrink: 0 }}
+                required
+              />
+              <span>
+                {t('agreeToTermsCheckbox') || 'I agree to the'}{' '}
+                <a href="/terms" target="_blank" rel="noopener noreferrer">
+                  {t('termsOfService') || 'Terms of Service'}
+                </a>{' '}
+                {t('and') || 'and'}{' '}
+                <a href="/privacy" target="_blank" rel="noopener noreferrer">
+                  {t('privacyPolicy') || 'Privacy Policy'}
+                </a>
+              </span>
+            </label>
+
+            <div style={{ display: 'flex', gap: '12px', marginTop: '16px' }}>
               <button
                 type="button"
                 className="btn btn-secondary"
@@ -822,7 +857,7 @@ export function Signup() {
                 type="submit"
                 className="btn btn-primary btn-lg"
                 style={{ flex: 1 }}
-                disabled={loading}
+                disabled={loading || !formData.termsAccepted}
               >
                 {loading ? (
                   <>
@@ -834,15 +869,6 @@ export function Signup() {
                 )}
               </button>
             </div>
-
-            <p style={{
-              marginTop: '16px',
-              textAlign: 'center',
-              fontSize: '12px',
-              color: 'var(--color-text-muted)'
-            }}>
-              {t('agreeToTerms') || 'By creating an account, you agree to our Terms of Service'}
-            </p>
           </form>
         )}
       </div>

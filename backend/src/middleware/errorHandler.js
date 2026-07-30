@@ -10,6 +10,7 @@ export function errorHandler(err, req, res, next) {
     stack: err.stack,
     path: req.path,
     method: req.method,
+    requestId: req.id,
   });
 
   // Don't leak error details in production
@@ -17,6 +18,7 @@ export function errorHandler(err, req, res, next) {
 
   res.status(err.status || 500).json({
     error: isDev ? err.message : 'Internal server error',
+    requestId: req.id,
     ...(isDev && { stack: err.stack }),
   });
 }

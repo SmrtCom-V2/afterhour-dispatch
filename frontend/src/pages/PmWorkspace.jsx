@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useState, useEffect, useRef } from 'react';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../utils/api';
 import { usePm } from '../context/PmContext';
 
@@ -95,9 +95,9 @@ function PmDashboard({ pmCompany, stats, buildings, tenants, serviceProviders })
 
   return (
     <div>
-      {/* Stats Grid */}
+      {/* Stats Grid — every tile is a shortcut into the matching tab, not just a number */}
       <div className="stats-grid" style={{ marginBottom: 24 }}>
-        <div className="stat-card">
+        <div className="stat-card clickable" onClick={() => navigate(`/pm/${pmId}/buildings`)} role="button" tabIndex={0}>
           <div className="stat-card-header">
             <div className="stat-card-icon primary"><BuildingIcon /></div>
           </div>
@@ -105,7 +105,7 @@ function PmDashboard({ pmCompany, stats, buildings, tenants, serviceProviders })
           <div className="stat-card-label">Properties</div>
         </div>
 
-        <div className="stat-card">
+        <div className="stat-card clickable" onClick={() => navigate(`/pm/${pmId}/tenants`)} role="button" tabIndex={0}>
           <div className="stat-card-header">
             <div className="stat-card-icon success"><UsersIcon /></div>
           </div>
@@ -113,7 +113,7 @@ function PmDashboard({ pmCompany, stats, buildings, tenants, serviceProviders })
           <div className="stat-card-label">Tenants</div>
         </div>
 
-        <div className="stat-card">
+        <div className="stat-card clickable" onClick={() => navigate(`/pm/${pmId}/service-providers`)} role="button" tabIndex={0}>
           <div className="stat-card-header">
             <div className="stat-card-icon warning"><WrenchIcon /></div>
           </div>
@@ -121,7 +121,7 @@ function PmDashboard({ pmCompany, stats, buildings, tenants, serviceProviders })
           <div className="stat-card-label">Service Providers</div>
         </div>
 
-        <div className="stat-card">
+        <div className="stat-card clickable" onClick={() => navigate(`/pm/${pmId}/incidents`)} role="button" tabIndex={0}>
           <div className="stat-card-header">
             <div className="stat-card-icon primary"><PhoneIcon /></div>
           </div>
@@ -129,10 +129,16 @@ function PmDashboard({ pmCompany, stats, buildings, tenants, serviceProviders })
           <div className="stat-card-label">Calls This Month</div>
         </div>
 
-        <div className="stat-card" style={{
-          borderColor: parseInt(stats?.open_incidents) > 0 ? 'var(--color-danger)' : undefined,
-          borderWidth: parseInt(stats?.open_incidents) > 0 ? 2 : undefined
-        }}>
+        <div
+          className="stat-card clickable"
+          onClick={() => navigate(`/pm/${pmId}/incidents?status=open`)}
+          role="button"
+          tabIndex={0}
+          style={{
+            borderColor: parseInt(stats?.open_incidents) > 0 ? 'var(--color-danger)' : undefined,
+            borderWidth: parseInt(stats?.open_incidents) > 0 ? 2 : undefined
+          }}
+        >
           <div className="stat-card-header">
             <div className={`stat-card-icon ${parseInt(stats?.open_incidents) > 0 ? 'danger' : 'success'}`}>
               <AlertIcon />
@@ -318,6 +324,48 @@ function PmBuildings({ buildings, pmId, onRefresh }) {
   const [form, setForm] = useState(initialBuildingForm);
   const [activeTab, setActiveTab] = useState('basic');
   const [saving, setSaving] = useState(false);
+
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [importRows, setImportRows] = useState([]);
+  const [importError, setImportError] = useState('');
+  const [importResult, setImportResult] = useState(null);
+  const [importing, setImporting] = useState(false);
+  const importFileInputRef = useRef(null);
+
+  const openImportModal = () => {
+    setImportRows([]);
+    setImportError('');
+    setImportResult(null);
+    setShowImportModal(true);
+  };
+
+  const handleImportFileSelect = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const text = await file.text();
+    const { rows, error } = parseBuildingCsv(text);
+    if (error) {
+      setImportError(error);
+      setImportRows([]);
+    } else {
+      setImportError('');
+      setImportRows(rows);
+    }
+  };
+
+  const handleImportSubmit = async () => {
+    if (importRows.length === 0) return;
+    setImporting(true);
+    try {
+      const result = await api.bulkImportBuildings(pmId, importRows);
+      setImportResult(result);
+      onRefresh();
+    } catch (err) {
+      setImportError(err.message);
+    } finally {
+      setImporting(false);
+    }
+  };
 
   const openModal = (building = null) => {
     if (building) {
@@ -514,7 +562,10 @@ function PmBuildings({ buildings, pmId, onRefresh }) {
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginBottom: 16 }}>
+        <button className="btn btn-secondary" onClick={openImportModal}>
+          Import CSV
+        </button>
         <button className="btn btn-primary" onClick={() => openModal()}>
           <PlusIcon /> Add Property
         </button>
@@ -1091,8 +1142,191 @@ function PmBuildings({ buildings, pmId, onRefresh }) {
           </div>
         </div>
       )}
+
+      {/* Import CSV Modal */}
+      {showImportModal && (
+        <div className="modal-overlay" onClick={() => setShowImportModal(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2 className="modal-title">Import Properties from CSV</h2>
+              <button className="btn btn-secondary btn-sm" onClick={() => setShowImportModal(false)} style={{ padding: 8 }}><CloseIcon /></button>
+            </div>
+
+            <div style={{ padding: '0 24px 24px' }}>
+              {!importResult ? (
+                <>
+                  <div className="form-group">
+                    <label className="form-label">CSV File</label>
+                    <div className="text-sm text-muted" style={{ marginBottom: 8 }}>
+                      File must have a header row with an <code>address</code> column (required).
+                      Optional columns: <code>name, city, postalCode, buildingType, totalUnits</code>.
+                    </div>
+                    <input
+                      ref={importFileInputRef}
+                      type="file"
+                      accept=".csv,text/csv"
+                      onChange={handleImportFileSelect}
+                      className="form-input"
+                    />
+                  </div>
+
+                  {importError && (
+                    <div className="card" style={{ background: 'var(--color-danger-bg)', marginBottom: 16 }}>
+                      <div className="card-body" style={{ padding: 12 }}>
+                        <div className="text-sm">{importError}</div>
+                      </div>
+                    </div>
+                  )}
+
+                  {importRows.length > 0 && !importError && (
+                    <div className="card" style={{ marginBottom: 16 }}>
+                      <div className="card-header">
+                        <h3 className="card-title">Preview — {importRows.length} properties found</h3>
+                      </div>
+                      <div className="table-container" style={{ maxHeight: 240, overflowY: 'auto' }}>
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>Address</th>
+                              <th>City</th>
+                              <th>Type</th>
+                              <th>Units</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {importRows.map((r, i) => (
+                              <tr key={i}>
+                                <td>{r.address}</td>
+                                <td>{r.city || '-'}</td>
+                                <td>{r.buildingType || '-'}</td>
+                                <td>{r.totalUnits || '-'}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="modal-actions">
+                    <button type="button" className="btn btn-secondary" onClick={() => setShowImportModal(false)}>Cancel</button>
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      disabled={importRows.length === 0 || importing}
+                      onClick={handleImportSubmit}
+                    >
+                      {importing ? 'Importing...' : `Import ${importRows.length || ''} Properties`}
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="card" style={{ background: 'var(--color-success-bg)', marginBottom: 16 }}>
+                    <div className="card-body" style={{ padding: 12 }}>
+                      <div className="text-sm">
+                        Successfully imported {importResult.inserted?.length || 0} properties.
+                        {importResult.errors?.length > 0 && ` ${importResult.errors.length} rows failed.`}
+                      </div>
+                    </div>
+                  </div>
+
+                  {importResult.errors?.length > 0 && (
+                    <div className="card" style={{ marginBottom: 16 }}>
+                      <div className="card-header">
+                        <h3 className="card-title">Failed Rows</h3>
+                      </div>
+                      <div className="table-container" style={{ maxHeight: 200, overflowY: 'auto' }}>
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>Address</th>
+                              <th>Error</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {importResult.errors.map((e, i) => (
+                              <tr key={i}>
+                                <td>{e.building?.address || '-'}</td>
+                                <td className="text-danger">{e.error}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="modal-actions">
+                    <button type="button" className="btn btn-primary" onClick={() => setShowImportModal(false)}>Done</button>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
+}
+
+// Parses a simple CSV with a header row: address,name,city,postalCode,buildingType,totalUnits
+// (only "address" is required, extra/missing columns ignored)
+function parseBuildingCsv(text) {
+  const lines = text.split(/\r?\n/).filter(l => l.trim().length > 0);
+  if (lines.length < 2) return { rows: [], error: 'File has no data rows' };
+
+  const header = lines[0].split(',').map(h => h.trim().toLowerCase());
+  const addressIdx = header.indexOf('address');
+  const nameIdx = header.indexOf('name');
+  const cityIdx = header.indexOf('city');
+  const postalCodeIdx = header.indexOf('postalcode');
+  const buildingTypeIdx = header.indexOf('buildingtype');
+  const totalUnitsIdx = header.indexOf('totalunits');
+
+  if (addressIdx === -1) {
+    return { rows: [], error: 'CSV must have an "address" column' };
+  }
+
+  const rows = lines.slice(1).map(line => {
+    const cols = line.split(',').map(c => c.trim());
+    return {
+      address: cols[addressIdx] || '',
+      name: nameIdx !== -1 ? (cols[nameIdx] || '') : '',
+      city: cityIdx !== -1 ? (cols[cityIdx] || '') : '',
+      postalCode: postalCodeIdx !== -1 ? (cols[postalCodeIdx] || '') : '',
+      buildingType: buildingTypeIdx !== -1 ? (cols[buildingTypeIdx] || '') : '',
+      totalUnits: totalUnitsIdx !== -1 ? (cols[totalUnitsIdx] || '') : '',
+    };
+  }).filter(r => r.address);
+
+  return { rows, error: null };
+}
+
+// Parses a simple CSV with a header row: name,phone,unit (extra columns ignored)
+function parseTenantCsv(text) {
+  const lines = text.split(/\r?\n/).filter(l => l.trim().length > 0);
+  if (lines.length < 2) return { rows: [], error: 'File has no data rows' };
+
+  const header = lines[0].split(',').map(h => h.trim().toLowerCase());
+  const nameIdx = header.indexOf('name');
+  const phoneIdx = header.indexOf('phone');
+  const unitIdx = header.indexOf('unit');
+
+  if (nameIdx === -1 || phoneIdx === -1) {
+    return { rows: [], error: 'CSV must have "name" and "phone" columns' };
+  }
+
+  const rows = lines.slice(1).map(line => {
+    const cols = line.split(',').map(c => c.trim());
+    return {
+      name: cols[nameIdx] || '',
+      phone: cols[phoneIdx] || '',
+      unit: unitIdx !== -1 ? (cols[unitIdx] || '') : '',
+    };
+  }).filter(r => r.name && r.phone);
+
+  return { rows, error: null };
 }
 
 // PM Tenants Component
@@ -1101,6 +1335,50 @@ function PmTenants({ tenants, buildings, onRefresh }) {
   const [editingItem, setEditingItem] = useState(null);
   const [form, setForm] = useState({ buildingId: '', name: '', phone: '', unit: '', email: '', floor: '', entrance: '', notes: '' });
   const [saving, setSaving] = useState(false);
+
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [importBuildingId, setImportBuildingId] = useState('');
+  const [importRows, setImportRows] = useState([]);
+  const [importError, setImportError] = useState('');
+  const [importResult, setImportResult] = useState(null);
+  const [importing, setImporting] = useState(false);
+  const fileInputRef = useRef(null);
+
+  const openImportModal = () => {
+    setImportBuildingId(buildings[0]?.id || '');
+    setImportRows([]);
+    setImportError('');
+    setImportResult(null);
+    setShowImportModal(true);
+  };
+
+  const handleFileSelect = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const text = await file.text();
+    const { rows, error } = parseTenantCsv(text);
+    if (error) {
+      setImportError(error);
+      setImportRows([]);
+    } else {
+      setImportError('');
+      setImportRows(rows);
+    }
+  };
+
+  const handleImportSubmit = async () => {
+    if (!importBuildingId || importRows.length === 0) return;
+    setImporting(true);
+    try {
+      const result = await api.bulkImportTenants(importBuildingId, importRows);
+      setImportResult(result);
+      onRefresh();
+    } catch (err) {
+      setImportError(err.message);
+    } finally {
+      setImporting(false);
+    }
+  };
 
   const openModal = (tenant = null) => {
     if (tenant) {
@@ -1152,7 +1430,10 @@ function PmTenants({ tenants, buildings, onRefresh }) {
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginBottom: 16 }}>
+        <button className="btn btn-secondary" onClick={openImportModal} disabled={buildings.length === 0}>
+          Import CSV
+        </button>
         <button className="btn btn-primary" onClick={() => openModal()} disabled={buildings.length === 0}>
           <PlusIcon /> Add Tenant
         </button>
@@ -1276,6 +1557,139 @@ function PmTenants({ tenants, buildings, onRefresh }) {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Import CSV Modal */}
+      {showImportModal && (
+        <div className="modal-overlay" onClick={() => setShowImportModal(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2 className="modal-title">Import Tenants from CSV</h2>
+              <button className="btn btn-secondary btn-sm" onClick={() => setShowImportModal(false)} style={{ padding: 8 }}><CloseIcon /></button>
+            </div>
+
+            <div style={{ padding: '0 24px 24px' }}>
+              {!importResult ? (
+                <>
+                  <div className="form-group">
+                    <label className="form-label">Property *</label>
+                    <select className="form-select" value={importBuildingId} onChange={(e) => setImportBuildingId(e.target.value)} required>
+                      <option value="">Select property</option>
+                      {buildings.map((b) => (
+                        <option key={b.id} value={b.id}>{b.address}{b.city ? `, ${b.city}` : ''}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">CSV File</label>
+                    <div className="text-sm text-muted" style={{ marginBottom: 8 }}>
+                      File must have a header row with columns: <code>name, phone, unit</code> (unit is optional).
+                    </div>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept=".csv,text/csv"
+                      onChange={handleFileSelect}
+                      className="form-input"
+                    />
+                  </div>
+
+                  {importError && (
+                    <div className="card" style={{ background: 'var(--color-danger-bg)', marginBottom: 16 }}>
+                      <div className="card-body" style={{ padding: 12 }}>
+                        <div className="text-sm">{importError}</div>
+                      </div>
+                    </div>
+                  )}
+
+                  {importRows.length > 0 && !importError && (
+                    <div className="card" style={{ marginBottom: 16 }}>
+                      <div className="card-header">
+                        <h3 className="card-title">Preview — {importRows.length} tenants found</h3>
+                      </div>
+                      <div className="table-container" style={{ maxHeight: 240, overflowY: 'auto' }}>
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>Name</th>
+                              <th>Phone</th>
+                              <th>Unit</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {importRows.map((r, i) => (
+                              <tr key={i}>
+                                <td>{r.name}</td>
+                                <td style={{ fontFamily: 'monospace' }}>{r.phone}</td>
+                                <td>{r.unit || '-'}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="modal-actions">
+                    <button type="button" className="btn btn-secondary" onClick={() => setShowImportModal(false)}>Cancel</button>
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      disabled={!importBuildingId || importRows.length === 0 || importing}
+                      onClick={handleImportSubmit}
+                    >
+                      {importing ? 'Importing...' : `Import ${importRows.length || ''} Tenants`}
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="card" style={{ background: 'var(--color-success-bg)', marginBottom: 16 }}>
+                    <div className="card-body" style={{ padding: 12 }}>
+                      <div className="text-sm">
+                        Successfully imported {importResult.inserted?.length || 0} tenants.
+                        {importResult.errors?.length > 0 && ` ${importResult.errors.length} rows failed.`}
+                      </div>
+                    </div>
+                  </div>
+
+                  {importResult.errors?.length > 0 && (
+                    <div className="card" style={{ marginBottom: 16 }}>
+                      <div className="card-header">
+                        <h3 className="card-title">Failed Rows</h3>
+                      </div>
+                      <div className="table-container" style={{ maxHeight: 200, overflowY: 'auto' }}>
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>Name</th>
+                              <th>Phone</th>
+                              <th>Error</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {importResult.errors.map((e, i) => (
+                              <tr key={i}>
+                                <td>{e.tenant?.name}</td>
+                                <td>{e.tenant?.phone}</td>
+                                <td className="text-sm" style={{ color: 'var(--color-danger)' }}>{e.error}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="modal-actions">
+                    <button type="button" className="btn btn-primary" onClick={() => setShowImportModal(false)}>Done</button>
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -1469,14 +1883,26 @@ function PmIncidents({ pmId, pmName }) {
   const [incidents, setIncidents] = useState([]);
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  // Reads ?status=open so the workspace's "Open Incidents" stat tile can
+  // link straight into a pre-filtered list, same pattern as the FM-level
+  // Incidents page.
+  const [filter, setFilter] = useState(() => (searchParams.get('status') === 'open' ? 'open' : 'all'));
+
+  useEffect(() => {
+    const statusParam = searchParams.get('status');
+    setFilter(statusParam === 'open' ? 'open' : 'all');
+  }, [searchParams]);
 
   useEffect(() => {
     loadIncidents();
-  }, [pmId]);
+  }, [pmId, filter]);
 
   const loadIncidents = async () => {
     try {
-      const data = await api.getIncidents({ pmCompanyId: pmId });
+      const params = { pmCompanyId: pmId };
+      if (filter === 'open') params.status = 'open';
+      const data = await api.getIncidents(params);
       setIncidents(data.incidents || []);
     } catch (err) {
       console.error('Failed to load incidents:', err);
@@ -1521,6 +1947,18 @@ function PmIncidents({ pmId, pmName }) {
 
   return (
     <div className="card">
+      <div className="card-header">
+        <h3 className="card-title">Incidents</h3>
+        <select
+          className="form-select"
+          style={{ width: 180 }}
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+        >
+          <option value="all">All incidents</option>
+          <option value="open">Open only</option>
+        </select>
+      </div>
       <div className="table-container">
         <table>
           <thead>
@@ -1539,7 +1977,9 @@ function PmIncidents({ pmId, pmName }) {
                   <div className="empty-state">
                     <div className="empty-state-icon"><AlertIcon /></div>
                     <h3 className="empty-state-title">No Incidents</h3>
-                    <p className="empty-state-description">No incidents recorded for {pmName}.</p>
+                    <p className="empty-state-description">
+                      {filter === 'open' ? `No open incidents for ${pmName}.` : `No incidents recorded for ${pmName}.`}
+                    </p>
                   </div>
                 </td>
               </tr>

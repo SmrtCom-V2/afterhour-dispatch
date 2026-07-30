@@ -103,6 +103,7 @@ const initialFormState = {
   afterhoursStart: '18:00',
   afterhoursEnd: '07:00',
   afterhoursByDay: { ...defaultDayHours },
+  treatAllAsEmergency: false,
 };
 
 export function PmCompanies() {
@@ -183,6 +184,7 @@ export function PmCompanies() {
         afterhoursStart: pm.afterhours_start?.slice(0, 5) || '18:00',
         afterhoursEnd: pm.afterhours_end?.slice(0, 5) || '07:00',
         afterhoursByDay: parsedByDay,
+        treatAllAsEmergency: pm.treat_all_as_emergency === true,
       });
     } else {
       setEditingPm(null);
@@ -755,6 +757,20 @@ export function PmCompanies() {
                       </p>
                     </div>
                   )}
+
+                  <div className="form-field-pro" style={{ marginTop: '16px' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                      <input
+                        type="checkbox"
+                        checked={formData.treatAllAsEmergency}
+                        onChange={(e) => updateField('treatAllAsEmergency', e.target.checked)}
+                      />
+                      <span>{t('treatAllAsEmergency') || 'Always treat calls as emergencies, regardless of the schedule above'}</span>
+                    </label>
+                    <p style={{ fontSize: '12px', color: 'var(--color-text-muted)', marginTop: '4px' }}>
+                      {t('treatAllAsEmergencyHint') || 'Off (default): a call during business hours plays a message asking the caller to contact you during business hours instead. On: every call is triaged as a possible emergency no matter what time it is.'}
+                    </p>
+                  </div>
 
                   <div className="form-field-pro" style={{ marginTop: '16px' }}>
                     <div className="form-label-pro">

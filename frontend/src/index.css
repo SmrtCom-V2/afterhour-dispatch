@@ -402,6 +402,14 @@ a {
   box-shadow: var(--shadow-md);
 }
 
+.stat-card.clickable {
+  cursor: pointer;
+}
+
+.stat-card.clickable:hover {
+  transform: translateY(-2px);
+}
+
 .stat-card-header {
   display: flex;
   align-items: center;
@@ -522,6 +530,80 @@ tr.clickable {
 .badge-warning { background: var(--color-warning-bg); color: var(--color-warning); }
 .badge-danger { background: var(--color-danger-bg); color: var(--color-danger); }
 .badge-info { background: var(--color-info-bg); color: var(--color-info); }
+.badge-emergency { background: var(--color-danger-bg); color: var(--color-danger); font-weight: 600; }
+.badge-muted { background: var(--color-bg-hover); color: var(--color-text-muted); }
+
+.confidence { font-weight: 600; }
+.confidence.high { color: var(--color-success); }
+.confidence.low { color: var(--color-warning); }
+
+/* Incident detail: 3-column info grid built on the standard .card */
+.incident-info-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 20px;
+  margin-bottom: 24px;
+}
+
+@media (max-width: 1024px) {
+  .incident-info-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.info-table {
+  width: 100%;
+  font-size: 13px;
+}
+
+.info-table td {
+  padding: 8px 0;
+  border-bottom: none;
+}
+
+.info-table tr:not(:last-child) td {
+  border-bottom: 1px solid var(--color-border-light);
+}
+
+.info-table td:first-child {
+  color: var(--color-text-secondary);
+  width: 90px;
+}
+
+.info-table td:last-child {
+  color: var(--color-text);
+}
+
+.current-state-box {
+  padding: 12px 20px;
+  border-radius: var(--radius-lg);
+  text-align: center;
+  min-width: 160px;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-card);
+}
+
+.current-state-box.alert {
+  border-color: var(--color-danger);
+  background: var(--color-danger-bg);
+}
+
+.current-state-label {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+
+.current-state-value {
+  font-weight: 700;
+  font-size: 15px;
+  color: var(--color-text);
+}
+
+.current-state-value.alert { color: var(--color-danger); }
+.current-state-value.resolved { color: var(--color-success); }
 
 .status-dot {
   width: 8px;
@@ -1243,6 +1325,16 @@ tr.clickable {
   animation: pulse-urgent 1s ease-in-out infinite;
 }
 
+.live-indicator.clickable {
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.live-indicator.clickable:hover {
+  background: rgba(255, 255, 255, 0.28);
+  transform: translateY(-1px);
+}
+
 @keyframes pulse-glow {
   0%, 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4); }
   50% { box-shadow: 0 0 0 8px rgba(16, 185, 129, 0); }
@@ -1267,6 +1359,10 @@ tr.clickable {
 .stat-card-modern:hover {
   box-shadow: var(--shadow-lg);
   transform: translateY(-2px);
+}
+
+.stat-card-modern.clickable {
+  cursor: pointer;
 }
 
 .stat-card-modern::before {
@@ -1509,6 +1605,12 @@ tr.clickable {
   margin-top: 8px;
 }
 
+.bar-chart-value {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
 /* Quick Stats Row */
 .quick-stats-row {
   display: grid;
@@ -1610,6 +1712,28 @@ tr.clickable {
   color: var(--color-text-secondary);
   margin-bottom: 16px;
   font-weight: 500;
+}
+
+/* Photo grid (incident/SP report attachments) */
+.photo-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 12px;
+}
+
+.photo-thumbnail {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.photo-thumbnail:hover {
+  border-color: var(--color-primary);
+  transform: scale(1.02);
 }
 
 /* Page Header Modern */

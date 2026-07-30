@@ -207,8 +207,9 @@ router.post('/', async (req, res) => {
 
     await client.query('COMMIT');
 
-    // Generate auth token
-    const token = generateToken(user.id, user.email);
+    // Generate auth token — new fm_admin rows default token_version to 1
+    // (see db/migrations/add_token_version.sql), no extra query needed.
+    const token = generateToken(user.id, user.email, { tokenVersion: 1 });
 
     logger.info('New company registered', {
       companyId: company.id,
@@ -535,8 +536,9 @@ router.post('/with-card', async (req, res) => {
 
     await client.query('COMMIT');
 
-    // Generate auth token
-    const token = generateToken(user.id, user.email);
+    // Generate auth token — new fm_admin rows default token_version to 1
+    // (see db/migrations/add_token_version.sql), no extra query needed.
+    const token = generateToken(user.id, user.email, { tokenVersion: 1 });
 
     logger.info('New company registered with card', {
       companyId: company.id,

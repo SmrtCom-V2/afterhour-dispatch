@@ -22,7 +22,7 @@ router.post('/login', async (req, res) => {
 
     // Find user
     const result = await db.query(
-      `SELECT fa.id, fa.email, fa.password_hash, fa.name, fa.fm_company_id, fa.is_admin, fa.is_platform_admin, fc.name as company_name
+      `SELECT fa.id, fa.email, fa.password_hash, fa.name, fa.fm_company_id, fa.is_admin, fa.is_platform_admin, fa.token_version, fc.name as company_name
        FROM fm_admin fa
        JOIN fm_company fc ON fa.fm_company_id = fc.id
        WHERE fa.email = $1`,
@@ -42,7 +42,7 @@ router.post('/login', async (req, res) => {
     }
 
     // Generate token
-    const token = generateToken(user.id, user.email);
+    const token = generateToken(user.id, user.email, { tokenVersion: user.token_version });
 
     logger.info('User logged in', { userId: user.id, email: user.email });
 
@@ -106,14 +106,23 @@ router.post('/change-password', authenticateToken, async (req, res) => {
     // Hash new password
     const newHash = await bcrypt.hash(newPassword, 10);
 
-    await db.query(
-      'UPDATE fm_admin SET password_hash = $1 WHERE id = $2',
+    // Bumping token_version invalidates every other session (stolen device,
+    // old browser tab, etc.) immediately — they fail authenticateToken's
+    // version check on their next request instead of riding out the JWT's
+    // remaining ~24h natural expiry.
+    const updateResult = await db.query(
+      `UPDATE fm_admin SET password_hash = $1, token_version = token_version + 1
+       WHERE id = $2 RETURNING token_version`,
       [newHash, req.user.id]
     );
 
     logger.info('Password changed', { userId: req.user.id });
 
-    res.json({ message: 'Password changed successfully' });
+    const token = generateToken(req.user.id, req.user.email, {
+      tokenVersion: updateResult.rows[0].token_version
+    });
+
+    res.json({ message: 'Password changed successfully', token });
   } catch (error) {
     logger.error('Password change error', { error: error.message });
     res.status(500).json({ error: 'Password change failed' });
