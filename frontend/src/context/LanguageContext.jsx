@@ -15,6 +15,8 @@ const translations = {
     logout: 'Abmelden',
     employees: 'Mitarbeiter',
     pmCompanies: 'PM Unternehmen',
+    yourProducts: 'Ihre Produkte',
+    current: 'Aktuell',
 
     // Sidebar sections
     overview: 'Übersicht',
@@ -280,7 +282,22 @@ const translations = {
     creatingAccount: 'Konto wird erstellt...',
     createAccount: 'Konto erstellen',
     agreeToTerms: 'Mit der Erstellung eines Kontos stimmen Sie unseren Nutzungsbedingungen und Datenschutzrichtlinien zu',
+    agreeToTermsCheckbox: 'Ich stimme den',
+    termsOfService: 'Nutzungsbedingungen',
+    and: 'und',
+    privacyPolicy: 'Datenschutzrichtlinien',
+    mustAcceptTerms: 'Sie müssen den Nutzungsbedingungen zustimmen, um fortzufahren',
     account: 'Konto',
+    verify: 'Bestätigen',
+    weWillSendCode: 'Wir senden Ihnen einen Bestätigungscode',
+    sendCode: 'Code senden',
+    verifyCode: 'Code bestätigen',
+    verifying: 'Wird überprüft...',
+    codeSentTo: 'Code gesendet an',
+    didntReceiveCode: 'Keinen Code erhalten?',
+    resendIn: 'Erneut senden in',
+    resendCode: 'Code erneut senden',
+    changeEmail: 'E-Mail ändern',
 
     // Status Banners
     trialExpired: 'Ihre Testphase ist abgelaufen.',
@@ -549,6 +566,8 @@ const translations = {
     logout: 'Log out',
     employees: 'Employees',
     pmCompanies: 'PM Companies',
+    yourProducts: 'Your Products',
+    current: 'Current',
 
     // Sidebar sections
     overview: 'Overview',
@@ -814,7 +833,22 @@ const translations = {
     creatingAccount: 'Creating account...',
     createAccount: 'Create Account',
     agreeToTerms: 'By creating an account, you agree to our Terms of Service and Privacy Policy',
+    agreeToTermsCheckbox: 'I agree to the',
+    termsOfService: 'Terms of Service',
+    and: 'and',
+    privacyPolicy: 'Privacy Policy',
+    mustAcceptTerms: 'You must accept the Terms of Service to continue',
     account: 'Account',
+    verify: 'Verify',
+    weWillSendCode: "We'll send you a verification code",
+    sendCode: 'Send Code',
+    verifyCode: 'Verify Code',
+    verifying: 'Verifying...',
+    codeSentTo: 'Code sent to',
+    didntReceiveCode: "Didn't receive the code?",
+    resendIn: 'Resend in',
+    resendCode: 'Resend code',
+    changeEmail: 'Change email',
 
     // Status Banners
     trialExpired: 'Your trial has expired.',
