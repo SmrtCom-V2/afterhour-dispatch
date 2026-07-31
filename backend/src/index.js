@@ -89,9 +89,21 @@ app.use(helmet({
 }));
 
 // CORS
+// FRONTEND_URL supports a comma-separated list so multiple live domains
+// (e.g. the Vercel URL and a later custom domain) can both call the API —
+// a single hardcoded origin here previously locked out afterhour.smrtcom.de
+// when it was added alongside the existing frontend-dun-one-70.vercel.app.
+const productionAllowedOrigins = (process.env.FRONTEND_URL || '')
+  .split(',')
+  .map((o) => o.trim())
+  .filter(Boolean);
+
 app.use(cors({
   origin: (origin, callback) => {
-    if (config.nodeEnv === 'production') return callback(null, process.env.FRONTEND_URL);
+    if (config.nodeEnv === 'production') {
+      if (!origin) return callback(null, true);
+      return callback(null, productionAllowedOrigins.includes(origin));
+    }
     // Allow local dev hosts on common ports (5173/5174/5175) and backend
     if (!origin) return callback(null, true);
     const allowed = ['http://localhost:5173', 'http://localhost:5174', 'http://localhost:5175', 'http://localhost:5180', 'http://localhost:3000', 'http://localhost:4000'];
