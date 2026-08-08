@@ -1,12 +1,24 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { api } from '../utils/api';
+import { useLanguage } from '../context/LanguageContext';
+
+const LANGUAGE_NAMES = { de: 'German', en: 'English', tr: 'Turkish', ar: 'Arabic', ru: 'Russian', pl: 'Polish' };
 
 export function IncidentDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const { language: operatorLanguage } = useLanguage();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  // Translation state for the Summary card — separate from the main incident
+  // load since it's a distinct, possibly-failing API call that must never
+  // block or hide the original summary (see backend route's comment on why
+  // failures surface, not silently fall back).
+  const [translation, setTranslation] = useState(null); // { translated, targetLanguage } | null
+  const [translating, setTranslating] = useState(false);
+  const [translateError, setTranslateError] = useState(null);
+  const [showOriginal, setShowOriginal] = useState(false);
 
   useEffect(() => {
     loadIncident();
@@ -32,6 +44,40 @@ export function IncidentDetail() {
       alert('Failed to close incident');
     }
   };
+
+  // Auto-translate the summary when the call happened in a language other
+  // than the viewing operator's dashboard language. call_language is the
+  // real source of truth (set by the voice gateway from the caller's actual
+  // DTMF language selection), not a guess from the text itself. Only DE/EN
+  // are real dashboard languages today (see LanguageContext) — a TR/AR/RU/PL
+  // call always needs translating for any operator; a DE call only needs it
+  // for an EN operator and vice versa.
+  useEffect(() => {
+    const incident = data?.incident;
+    if (!incident) return;
+    const callLang = (incident.call_language || 'de').toLowerCase();
+    if (callLang === operatorLanguage) {
+      setTranslation(null);
+      setTranslateError(null);
+      return;
+    }
+    if (!incident.issue_description) return;
+
+    let cancelled = false;
+    setTranslating(true);
+    setTranslateError(null);
+    api.translateIncidentSummary(id, operatorLanguage)
+      .then((result) => {
+        if (!cancelled) setTranslation(result);
+      })
+      .catch((err) => {
+        if (!cancelled) setTranslateError(err.message || 'Translation failed');
+      })
+      .finally(() => {
+        if (!cancelled) setTranslating(false);
+      });
+    return () => { cancelled = true; };
+  }, [data?.incident?.id, data?.incident?.call_language, operatorLanguage]);
 
   const formatTime = (dateStr) => {
     return new Date(dateStr).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
@@ -86,23 +132,69 @@ export function IncidentDetail() {
       sp_accepted: `SP accepted: ${eventData.sp_name || 'Unknown'}`,
       sp_declined: `SP declined: ${eventData.spName || eventData.sp_name || 'Unknown'}`,
       sp_no_response: `SP did not respond: ${eventData.spName || eventData.sp_name || 'Unknown'}`,
-      all_sp_unavailable: 'All SPs unavailable - escalating',
-      no_sp_available: 'No service provider was available',
+      all_sp_unavailable: 'All service providers unavailable — escalating to facility manager',
+      no_sp_available: 'No service provider configured for this building/trade — nobody could be dispatched',
       escalated_fm: 'Escalated to FM on-call',
-      escalated_to_fm: 'Escalated to facility manager',
+      escalated_to_fm: `Escalated to facility manager${eventData.fmName ? ` — called ${eventData.fmName}` : ''}${eventData.fmPhone ? ` (${eventData.fmPhone})` : ''}`,
       report_link_sent: 'Report link sent to SP',
       report_submitted: 'SP report submitted',
       report_deadline_missed: 'Report deadline missed (9 AM)',
       report_missing: 'Follow-up report overdue',
       manually_closed: `Manually closed by ${eventData.closed_by || 'operator'}`,
-      'wakeup.failsafe_triggered': 'Nobody responded — auto-dispatched',
+      'wakeup.failsafe_triggered': `Nobody responded within the wake-up window — auto-escalated${eventData.requiredTrade ? ` (looking for: ${eventData.requiredTrade})` : ''}`,
       'cockpit.decision': `Decision made: ${(eventData.action || '').replace(/_/g, ' ') || 'decision recorded'}`,
       'cockpit.outcome': `Outcome recorded: ${(eventData.outcome || '').replace(/_/g, ' ') || 'outcome recorded'}`,
       'cockpit.codes_viewed': 'Building access codes viewed',
       'owner_visit_report.submitted': 'On-site report submitted',
+      'notification.attempt': `Called ${eventData.recipient || 'on-call'} via ${(eventData.channel || '').replace(/_/g, ' ')}${eventData.purpose ? ` (${eventData.purpose.replace(/_/g, ' ')})` : ''} — ${eventData.result || 'pending'}`,
+      created_by_voice_gateway: 'Incident created from tenant phone call',
+      // The AI phone system calls back into an already-open incident as the
+      // caller gives more detail (e.g. answering a clarifying question) —
+      // each of these updates issue_description with a fresh summary, not a
+      // new problem. Previously fell through to the generic type.replace()
+      // fallback, showing the literal event type ("voice gateway followup
+      // call") once per call-back with no content — read as meaningless
+      // repeated noise. Surface the actual updated summary instead.
+      'voice_gateway.followup_call': eventData.issueDescription
+        ? `Caller follow-up — updated report: "${eventData.issueDescription}"`
+        : 'Caller follow-up call',
     };
 
     return eventDescriptions[type] || (type ? type.replace(/_/g, ' ') : 'Unknown event');
+  };
+
+  // Top-line "what happened" — a single readable sentence built from data
+  // that's already on the incident (created_at, decision_at, decided_by_person)
+  // plus the last relevant timeline event (who was actually notified/dispatched),
+  // instead of making an operator piece it together from raw event rows.
+  const buildOutcomeSummary = (incident, timeline) => {
+    const parts = [`Call in at ${formatTime(incident.created_at)}`];
+
+    const lastEscalation = [...timeline].reverse().find(
+      (e) => e.event_type === 'escalated_to_fm' || e.event_type === 'notification.attempt'
+    );
+    const spAccepted = [...timeline].reverse().find((e) => e.event_type === 'sp_accepted');
+
+    if (spAccepted) {
+      parts.push(`dispatched to ${spAccepted.event_data?.sp_name || 'service provider'} at ${formatTime(spAccepted.created_at)}`);
+    } else if (incident.no_sp_available_at) {
+      parts.push(`no service provider available at ${formatTime(incident.no_sp_available_at)}`);
+      if (lastEscalation) {
+        const who = lastEscalation.event_data?.fmName || lastEscalation.event_data?.recipient || 'on-call';
+        const phone = lastEscalation.event_data?.fmPhone;
+        parts.push(`escalated to ${who}${phone ? ` (${phone})` : ''} at ${formatTime(lastEscalation.created_at)}`);
+      }
+    } else if (incident.status === 'sp_dispatched') {
+      parts.push('awaiting service provider response');
+    }
+
+    if (incident.decided_by_person === 'failsafe') {
+      parts.push('— nobody responded in time, auto-escalated by the failsafe, not a human decision');
+    } else if (incident.decided_by_person) {
+      parts.push(`— decision made by ${incident.decided_by_person}`);
+    }
+
+    return parts.join(', ').replace(', —', ' —');
   };
 
   if (loading) return <div className="loading">Loading...</div>;
@@ -145,6 +237,89 @@ export function IncidentDetail() {
           Created: {formatDateTime(incident.created_at)}
         </span>
       </div>
+
+      {/* What Happened — one-line readable outcome (call time -> dispatch/
+          escalation -> who), built from data already on the incident/timeline
+          but previously left for the operator to reconstruct from raw event
+          rows. This is the first thing read on the page, above the summary. */}
+      <div className="card mb-6" style={{ borderLeft: '3px solid var(--color-primary, #1E40AF)' }}>
+        <div className="card-body" style={{ padding: '12px 16px' }}>
+          <div className="text-xs text-muted mb-4">What Happened</div>
+          <p style={{ margin: 0, lineHeight: 1.6, fontWeight: 500 }}>{buildOutcomeSummary(incident, timeline)}</p>
+        </div>
+      </div>
+
+      {/* Summary — the human-readable "what happened", not raw category tags.
+          issue_description is the AI's own written summary from the call
+          (e.g. "Tenant Ronald, Hauptstraße 10, reports a heating outage..."),
+          already stored on every incident but previously never shown on this
+          page at all — only the category chip and a raw audit log were
+          visible, which is not enough to understand a case at a glance.
+
+          Translation: this is a factual record of a real tenant call, so the
+          translated text is shown as primary (what the operator reads first
+          and acts on) but the original is always one click away, never
+          hidden — the operator must be able to verify the exact source
+          wording of a safety-relevant report, not just trust a black-box
+          translation. Loading and error states never block or hide the
+          original: if translation is in flight or fails, the original is
+          shown immediately either way. */}
+      {incident.issue_description && (
+        <div className="card mb-6">
+          <div className="card-header"><span className="card-title">Summary</span></div>
+          <div className="card-body">
+            {translating ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div className="skeleton-line" style={{ height: 14, width: '95%', background: 'var(--color-bg-hover)', borderRadius: 4 }} />
+                <div className="skeleton-line" style={{ height: 14, width: '80%', background: 'var(--color-bg-hover)', borderRadius: 4 }} />
+                <div className="text-xs text-muted" style={{ marginTop: 4 }}>
+                  Translating from {LANGUAGE_NAMES[(incident.call_language || 'de').toLowerCase()] || incident.call_language}…
+                </div>
+              </div>
+            ) : translation && !showOriginal ? (
+              <>
+                <p style={{ margin: 0, lineHeight: 1.6 }}>{translation.translated}</p>
+                <div className="text-xs text-muted" style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span title="Machine-translated from the original call language — verify against the original for anything safety-critical.">
+                    Translated from {LANGUAGE_NAMES[(incident.call_language || 'de').toLowerCase()] || incident.call_language}
+                  </span>
+                  <span>·</span>
+                  <button
+                    type="button"
+                    onClick={() => setShowOriginal(true)}
+                    className="text-xs"
+                    style={{ background: 'none', border: 'none', padding: 0, color: 'var(--color-primary, #1E40AF)', textDecoration: 'underline', cursor: 'pointer' }}
+                  >
+                    View original
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <p style={{ margin: 0, lineHeight: 1.6 }}>{incident.issue_description}</p>
+                {translation && showOriginal && (
+                  <div className="text-xs text-muted" style={{ marginTop: 8 }}>
+                    Original ({LANGUAGE_NAMES[(incident.call_language || 'de').toLowerCase()] || incident.call_language}) ·{' '}
+                    <button
+                      type="button"
+                      onClick={() => setShowOriginal(false)}
+                      className="text-xs"
+                      style={{ background: 'none', border: 'none', padding: 0, color: 'var(--color-primary, #1E40AF)', textDecoration: 'underline', cursor: 'pointer' }}
+                    >
+                      View translation
+                    </button>
+                  </div>
+                )}
+                {translateError && !translation && (
+                  <div className="text-xs text-warning" style={{ marginTop: 8 }} title={translateError}>
+                    Translation unavailable — showing original ({LANGUAGE_NAMES[(incident.call_language || 'de').toLowerCase()] || incident.call_language}).
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Actions */}
       {!['closed', 'sp_completed'].includes(incident.status) && (
