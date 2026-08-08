@@ -18,9 +18,46 @@
 
 import { db } from '../db/index.js';
 import { logger } from '../utils/logger.js';
-import { getVoiceAIProvider, GuidedQuestions, VerificationPrompts, BusinessHoursMessages, IssueCategories } from '../providers/voiceai/index.js';
+import { getVoiceAIProvider, GuidedQuestions, VerificationPrompts, BusinessHoursMessages, IssueCategories, keywordBackstopDetectsEmergency } from '../providers/voiceai/index.js';
 import { getTelephonyProvider } from '../providers/telephony/index.js';
 import { config } from '../config/index.js';
+import { resolveOnCallPerson } from './wakeupEngine.js';
+
+/**
+ * Live transfer (Aug 8 2026 — overrides Night Ops D1's original "AI never
+ * live-transfers, always hangup + async wake-up" rule for the emergency/
+ * unclear paths specifically). Caller stays on the line, we bridge in
+ * tonight's on-call primary via Twilio <Dial>. If they don't pick up within
+ * the timeout, Twilio hits the statusWebhookUrl below and control returns to
+ * the AI to take a full message — the existing wakeupEngine ladder (T0/2/5/
+ * backup/10 failsafe, unchanged) then handles getting that message to a human.
+ */
+const LIVE_TRANSFER_TIMEOUT_SECONDS = 20;
+
+async function attemptLiveTransfer(callId, incidentId, buildingId, language, connectingMessage) {
+  const telephony = getTelephonyProvider();
+  const person = buildingId ? await resolveOnCallPerson(buildingId, 'primary') : null;
+
+  if (!person?.phone) {
+    // No on-call person configured for this building/time — same config gap
+    // wakeStage already logs as no_recipient_configured. Fall through to the
+    // existing hangup + async wake-up path rather than dialing nothing.
+    logger.warn('Live transfer: no on-call person resolved, falling back to async wake-up', { incidentId, buildingId });
+    return null;
+  }
+
+  await addTimelineEntry(incidentId, 'live_transfer_attempted', { to_role: 'primary' });
+
+  return telephony.generateCallResponse([
+    { type: 'say', language, text: connectingMessage },
+    {
+      type: 'dial',
+      to: person.phone,
+      timeoutSeconds: LIVE_TRANSFER_TIMEOUT_SECONDS,
+      statusWebhookUrl: `/api/webhooks/call/${callId}/transfer-status`,
+    },
+  ]);
+}
 
 /**
  * Handle incoming call webhook
@@ -43,45 +80,71 @@ export async function handleIncomingCall(callData) {
 
   const fmCompany = fmResult.rows[0];
 
-  // Create call record
+  // Blocker #3 (2026-08-08 audit): Twilio retries this webhook on network
+  // hiccups with the SAME CallSid. ON CONFLICT DO NOTHING + a fallback SELECT
+  // (rather than a plain INSERT) means a retry replays the same response
+  // instead of creating a second call + incident row and paging the on-call
+  // worker twice for one phone call. See add_call_provider_id_dedupe.sql.
   const callRecord = await db.query(
     `INSERT INTO call (fm_company_id, caller_phone, call_provider_id, language)
      VALUES ($1, $2, $3, 'de')
+     ON CONFLICT (call_provider_id) WHERE (call_provider_id IS NOT NULL) DO NOTHING
      RETURNING id`,
     [fmCompany.id, from, callId]
   );
-  const internalCallId = callRecord.rows[0].id;
 
-  // Try to find tenant by phone
-  const tenantResult = await db.query(
-    `SELECT t.*, b.id as building_id, b.name as building_name, b.address as building_address,
-            b.ai_confidence_override
-     FROM tenant t
-     JOIN building b ON t.building_id = b.id
-     JOIN pm_company pm ON b.pm_company_id = pm.id
-     WHERE t.phone = $1 AND pm.fm_company_id = $2 AND t.status = 'active'`,
-    [from, fmCompany.id]
-  );
+  let internalCallId;
+  let incidentId;
 
-  const possibleTenant = tenantResult.rows[0] || null;
+  if (callRecord.rows.length > 0) {
+    internalCallId = callRecord.rows[0].id;
 
-  // Create incident record
-  const incidentResult = await db.query(
-    `INSERT INTO incident (call_id, building_id, tenant_id, tenant_phone_given, verification_status)
-     VALUES ($1, $2, $3, $4, $5)
-     RETURNING id`,
-    [
-      internalCallId,
-      possibleTenant?.building_id || null,
-      possibleTenant?.id || null,
-      from,
-      possibleTenant ? 'pending' : 'pending',
-    ]
-  );
-  const incidentId = incidentResult.rows[0].id;
+    // Try to find tenant by phone
+    const tenantResult = await db.query(
+      `SELECT t.*, b.id as building_id, b.name as building_name, b.address as building_address,
+              b.ai_confidence_override
+       FROM tenant t
+       JOIN building b ON t.building_id = b.id
+       JOIN pm_company pm ON b.pm_company_id = pm.id
+       WHERE t.phone = $1 AND pm.fm_company_id = $2 AND t.status = 'active'`,
+      [from, fmCompany.id]
+    );
 
-  // Add timeline entry
-  await addTimelineEntry(incidentId, 'call_received', { from, to, callId });
+    const possibleTenant = tenantResult.rows[0] || null;
+
+    // Create incident record
+    const incidentResult = await db.query(
+      `INSERT INTO incident (call_id, building_id, tenant_id, tenant_phone_given, verification_status)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING id`,
+      [
+        internalCallId,
+        possibleTenant?.building_id || null,
+        possibleTenant?.id || null,
+        from,
+        possibleTenant ? 'pending' : 'pending',
+      ]
+    );
+    incidentId = incidentResult.rows[0].id;
+
+    // Add timeline entry
+    await addTimelineEntry(incidentId, 'call_received', { from, to, callId });
+  } else {
+    // Retry of a call we've already seen — reuse the existing row instead of
+    // creating a duplicate. Twilio still needs a valid TwiML response below.
+    const existing = await db.query(
+      `SELECT c.id as call_id, i.id as incident_id
+       FROM call c LEFT JOIN incident i ON i.call_id = c.id
+       WHERE c.call_provider_id = $1
+       ORDER BY i.created_at DESC LIMIT 1`,
+      [callId]
+    );
+    internalCallId = existing.rows[0]?.call_id;
+    incidentId = existing.rows[0]?.incident_id;
+    logger.warn('Duplicate webhook for known call_provider_id — reusing existing call/incident', {
+      callId, internalCallId, incidentId,
+    });
+  }
 
   // Generate initial response - ask for language preference or start verification
   const telephony = getTelephonyProvider();
@@ -185,6 +248,8 @@ export async function handleVerification(callId, step, spokenInput) {
   const prompts = VerificationPrompts[language];
   const telephony = getTelephonyProvider();
   const voiceAI = getVoiceAIProvider();
+
+  await appendTranscript(callId, 'Caller', spokenInput);
 
   switch (step) {
     case 'verify-name':
@@ -395,6 +460,9 @@ export async function handleQuestionResponse(callId, questionIndex, spokenInput)
   const questions = GuidedQuestions[language];
   const question = questions[questionIndex];
 
+  await appendTranscript(callId, 'AI', question.question);
+  await appendTranscript(callId, 'Caller', spokenInput);
+
   // Store answer
   const currentAnswers = callData.guided_answers || {};
   currentAnswers[question.id] = spokenInput;
@@ -446,6 +514,19 @@ async function classifyAndDecide(callId, language) {
     callData.guided_answers || {}
   );
 
+  // Risk #6: independent keyword backstop — if the LLM's own classification
+  // missed an obvious emergency word the caller actually used, force
+  // isEmergency/confidence rather than trusting the LLM result alone. See
+  // keywordBackstopDetectsEmergency in providers/voiceai/index.js.
+  if (keywordBackstopDetectsEmergency(transcript.rows[0]?.transcript || '', callData.guided_answers || {}, classification)) {
+    logger.warn('Keyword backstop overrode LLM classification — forcing emergency', {
+      callId, incidentId: callData.incident_id, llmResult: classification,
+    });
+    classification.isEmergency = true;
+    classification.confidence = 100;
+    classification.reason = `Keyword backstop override: ${classification.reason || 'LLM did not flag as emergency'}`;
+  }
+
   // Determine threshold — ?? not ||, since an explicit override of 0
   // ("accept anything, never ask a human") is a valid, real setting and
   // must not be treated as unset and silently overridden.
@@ -472,6 +553,13 @@ async function classifyAndDecide(callId, language) {
       callData.incident_id,
     ]
   );
+
+  // Risk #10: link this incident to an existing recent one for the same
+  // building + issue category, if any, so the wake-up ladder pages the
+  // worker once per real-world issue instead of once per caller. Only
+  // meaningful once issue_category is known, hence run right after the
+  // classification UPDATE above, not at call-creation time.
+  await linkToClusterIfMatch(callData.incident_id, callData.building_id, classification.category);
 
   await addTimelineEntry(callData.incident_id, 'classified', {
     category: classification.category,
@@ -520,6 +608,17 @@ async function classifyAndDecide(callId, language) {
 
     await addTimelineEntry(callData.incident_id, 'classified_emergency_pending_human', {});
 
+    const connectingMessage = language === 'de'
+      ? 'Wir haben einen Notfall erkannt. Bitte bleiben Sie in der Leitung, wir verbinden Sie jetzt mit einem Mitarbeiter.'
+      : 'We have identified an emergency. Please stay on the line, connecting you with a representative now.';
+
+    const transferResponse = await attemptLiveTransfer(
+      callId, callData.incident_id, callData.building_id, language, connectingMessage
+    );
+    if (transferResponse) return transferResponse;
+
+    // No on-call person resolved for a live transfer — fall back to the
+    // original async path (wakeupEngine ladder still pages someone).
     const emergencyMessage = language === 'de'
       ? 'Wir haben einen Notfall erkannt. Ein Mitarbeiter wird umgehend benachrichtigt. Bitte bleiben Sie ruhig.'
       : 'We have identified an emergency. A representative is being notified immediately. Please stay calm.';
@@ -559,6 +658,15 @@ async function classifyAndDecide(callId, language) {
 
     await addTimelineEntry(callData.incident_id, 'classified_unclear_pending_human', { confidence: classification.confidence });
 
+    const connectingMessage = language === 'de'
+      ? 'Bitte bleiben Sie in der Leitung, wir verbinden Sie jetzt mit einem Mitarbeiter.'
+      : 'Please stay on the line, connecting you with a representative now.';
+
+    const transferResponse = await attemptLiveTransfer(
+      callId, callData.incident_id, callData.building_id, language, connectingMessage
+    );
+    if (transferResponse) return transferResponse;
+
     const unclearMessage = language === 'de'
       ? 'Wir leiten Ihren Anruf an einen Mitarbeiter weiter. Sie werden in Kürze zurückgerufen.'
       : 'We are forwarding your call to a representative. You will receive a callback shortly.';
@@ -568,6 +676,86 @@ async function classifyAndDecide(callId, language) {
       { type: 'hangup' },
     ]);
   }
+}
+
+/**
+ * Twilio hits this when the live-transfer <Dial> completes (answered,
+ * no-answer, busy, failed). Answered: nothing to do, the call already
+ * happened live. Anything else: take a full message via the AI, same as
+ * the old "forwarding your call" path, so the caller isn't just dropped —
+ * the existing wakeupEngine ladder then pages a human with that message.
+ */
+export async function handleTransferStatus(callId, dialCallStatus) {
+  const telephony = getTelephonyProvider();
+
+  const callResult = await db.query(
+    `SELECT c.language, i.id as incident_id
+     FROM call c JOIN incident i ON i.call_id = c.id
+     WHERE c.id = $1`,
+    [callId]
+  );
+  const callData = callResult.rows[0];
+  const language = callData?.language || 'de';
+
+  if (dialCallStatus === 'completed') {
+    // Worker answered and the bridged call already ran its course.
+    await addTimelineEntry(callData.incident_id, 'live_transfer_answered', {});
+    return telephony.generateCallResponse([{ type: 'hangup' }]);
+  }
+
+  await addTimelineEntry(callData.incident_id, 'live_transfer_no_answer', { dialCallStatus });
+
+  const noAnswerMessage = language === 'de'
+    ? 'Der Mitarbeiter ist derzeit nicht erreichbar. Bitte teilen Sie mir kurz Ihr Anliegen mit, damit wir Sie zurückrufen können.'
+    : 'The representative could not be reached right now. Please briefly describe your issue so we can call you back.';
+
+  return telephony.generateCallResponse([
+    { type: 'say', language, text: noAnswerMessage },
+    {
+      type: 'gather',
+      input: 'speech',
+      timeout: 15,
+      webhookUrl: `/api/webhooks/call/${callId}/transfer-message`,
+      language,
+    },
+  ]);
+}
+
+/**
+ * Caller's message after a failed live transfer — store it and hand off to
+ * the existing async wake-up ladder (wakeupEngine.js) for callback, same as
+ * a normal unclear-classification incident.
+ */
+export async function handleTransferMessage(callId, spokenInput) {
+  const callResult = await db.query(
+    `SELECT c.language, i.id as incident_id
+     FROM call c JOIN incident i ON i.call_id = c.id
+     WHERE c.id = $1`,
+    [callId]
+  );
+  const callData = callResult.rows[0];
+  const language = callData?.language || 'de';
+  const telephony = getTelephonyProvider();
+
+  await appendTranscript(callId, 'Caller', spokenInput);
+
+  await db.query(
+    `UPDATE incident SET issue_description = COALESCE(issue_description, '') || $1,
+                          ai_urgency = COALESCE(ai_urgency, 'unclear'),
+                          status = 'escalated_to_fm'
+     WHERE id = $2`,
+    [`\n[Nachricht nach nicht erreichtem Mitarbeiter]: ${spokenInput || ''}`, callData.incident_id]
+  );
+  await addTimelineEntry(callData.incident_id, 'transfer_message_taken', { message: spokenInput });
+
+  const closingMessage = language === 'de'
+    ? 'Vielen Dank. Wir haben Ihre Nachricht erhalten und melden uns umgehend.'
+    : 'Thank you. We have received your message and will get back to you shortly.';
+
+  return telephony.generateCallResponse([
+    { type: 'say', language, text: closingMessage },
+    { type: 'hangup' },
+  ]);
 }
 
 /**
@@ -617,12 +805,72 @@ function generateHangup(message) {
 /**
  * Add timeline entry
  */
+/**
+ * Risk #8 (2026-08-08 audit, promoted to primary call record once audio
+ * recording (Risk #7) was dropped from scope): call.transcript existed in
+ * the schema but nothing in this file ever wrote to it — only read/nulled.
+ * Appends incrementally per-turn (rather than a single end-of-call write)
+ * so a transcript exists even if the call drops mid-flow (crash, caller
+ * hangs up unexpectedly) — there is no single "call ended" webhook on the
+ * inbound Twilio TwiML flow the way voice-brain's WebSocket has an
+ * `ws.on('close')` to hook (see that file's separate, already-working
+ * transcript persistence via incidentService.endCallByRetellId).
+ */
+async function appendTranscript(callId, speaker, text) {
+  if (!text) return;
+  await db.query(
+    `UPDATE call SET transcript = COALESCE(transcript || E'\n', '') || $1 WHERE id = $2`,
+    [`${speaker}: ${text}`, callId]
+  );
+}
+
 async function addTimelineEntry(incidentId, eventType, eventData) {
   await db.query(
     `INSERT INTO incident_timeline (incident_id, event_type, event_data)
      VALUES ($1, $2, $3)`,
     [incidentId, eventType, JSON.stringify(eventData)]
   );
+}
+
+const CLUSTER_WINDOW_MINUTES = 15;
+
+/**
+ * Risk #10: if another incident at the same building, same issue_category,
+ * created within the last CLUSTER_WINDOW_MINUTES, is already pending and not
+ * itself a linked child, link this incident to it. wakeupEngine.js's tick
+ * query only pages the primary (linked_incident_id IS NULL) of a cluster —
+ * see that file's WHERE clause — so 3 tenants calling about one burst pipe
+ * pages the worker once, not 3 times, while still preserving every
+ * individual call's own incident row/transcript for the worker to review.
+ * Matching on category (not just building) is deliberate: an unrelated
+ * second emergency in the same building in the same window must NOT be
+ * silently swallowed into an earlier, different incident.
+ */
+async function linkToClusterIfMatch(incidentId, buildingId, issueCategory) {
+  if (!buildingId || !issueCategory) return;
+
+  const match = await db.query(
+    `SELECT id FROM incident
+     WHERE building_id = $1
+       AND issue_category = $2
+       AND linked_incident_id IS NULL
+       AND decision = 'pending'
+       AND id != $3
+       AND created_at > NOW() - INTERVAL '${CLUSTER_WINDOW_MINUTES} minutes'
+     ORDER BY created_at ASC
+     LIMIT 1`,
+    [buildingId, issueCategory, incidentId]
+  );
+
+  if (match.rows.length === 0) return;
+
+  const primaryId = match.rows[0].id;
+  await db.query(
+    `UPDATE incident SET linked_incident_id = $1, linked_reason = $2 WHERE id = $3`,
+    [primaryId, `Same building + issue (${issueCategory}) as an incident reported within the last ${CLUSTER_WINDOW_MINUTES} minutes`, incidentId]
+  );
+  await addTimelineEntry(incidentId, 'linked_to_existing_incident', { primaryIncidentId: primaryId });
+  await addTimelineEntry(primaryId, 'additional_caller_linked', { linkedIncidentId: incidentId });
 }
 
 const DAY_NAMES = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
@@ -705,4 +953,6 @@ export default {
   handleLanguageSelection,
   handleVerification,
   handleQuestionResponse,
+  handleTransferStatus,
+  handleTransferMessage,
 };

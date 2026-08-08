@@ -7,6 +7,19 @@ import { Router } from 'express';
 import { db } from '../db/index.js';
 import { authenticateToken } from '../middleware/auth.js';
 import { logger } from '../utils/logger.js';
+import { encryptAccessCode, decryptAccessCode } from '../utils/accessCodeCrypto.js';
+
+// Blocker #4 (2026-08-08 audit): decrypts the 3 access-code columns on a row
+// object in place, mutating and returning it — used everywhere a building
+// row (or an incident row carrying the same 3 columns via JOIN, in
+// cockpit.js/incidents.js) is sent back to a client.
+export function decryptBuildingCodes(row) {
+  if (!row) return row;
+  if ('key_safe_code' in row) row.key_safe_code = decryptAccessCode(row.key_safe_code);
+  if ('gate_code' in row) row.gate_code = decryptAccessCode(row.gate_code);
+  if ('main_entrance_code' in row) row.main_entrance_code = decryptAccessCode(row.main_entrance_code);
+  return row;
+}
 
 const router = Router();
 
@@ -94,7 +107,7 @@ router.get('/:id', async (req, res) => {
     );
 
     res.json({
-      building: buildingResult.rows[0],
+      building: decryptBuildingCodes(buildingResult.rows[0]),
       serviceProviders: spsResult.rows,
       tenants: tenantsResult.rows,
     });
@@ -197,9 +210,9 @@ router.post('/', async (req, res) => {
         parkingType,
         parkingSpaces,
         keySafeLocation,
-        keySafeCode,
-        gateCode,
-        mainEntranceCode,
+        encryptAccessCode(keySafeCode),
+        encryptAccessCode(gateCode),
+        encryptAccessCode(mainEntranceCode),
         waterShutoffLocation,
         gasShutoffLocation,
         electricShutoffLocation,
@@ -218,7 +231,7 @@ router.post('/', async (req, res) => {
 
     logger.info('Building created', { buildingId: result.rows[0].id, name: name || address });
 
-    res.status(201).json({ building: result.rows[0] });
+    res.status(201).json({ building: decryptBuildingCodes(result.rows[0]) });
   } catch (error) {
     logger.error('Error creating building', { error: error.message });
     res.status(500).json({ error: 'Failed to create building' });
@@ -387,7 +400,7 @@ router.put('/:id', async (req, res) => {
         buildingType, totalUnits, totalFloors, hasBasement, basementFloors,
         hasPenthouse, numEntrances, entranceNames, unitsPerFloor, unitNumberingFormat,
         hasElevator, numElevators, parkingType, parkingSpaces,
-        keySafeLocation, keySafeCode, gateCode, mainEntranceCode,
+        keySafeLocation, encryptAccessCode(keySafeCode), encryptAccessCode(gateCode), encryptAccessCode(mainEntranceCode),
         waterShutoffLocation, gasShutoffLocation, electricShutoffLocation,
         specialAccessInstructions, janitorName, janitorPhone, janitorEmail,
         emergencyContactName, emergencyContactPhone, specialInstructions,
@@ -397,7 +410,7 @@ router.put('/:id', async (req, res) => {
 
     logger.info('Building updated', { buildingId: id });
 
-    res.json({ building: result.rows[0] });
+    res.json({ building: decryptBuildingCodes(result.rows[0]) });
   } catch (error) {
     logger.error('Error updating building', { error: error.message });
     res.status(500).json({ error: 'Failed to update building' });

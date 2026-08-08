@@ -28,11 +28,16 @@ const STAGE_DELAY_MINUTES = { t0: 0, t2: 2, t5_backup: 5, t10_failsafe: 10 };
 export async function runWakeupTick() {
   try {
     const incidents = await db.query(
+      // linked_incident_id IS NULL: only the primary of a same-building/
+      // same-issue cluster gets a wake-up ladder — linked duplicates
+      // (Risk #10, linkToClusterIfMatch in callFlow.js) ride along on the
+      // primary's page instead of each starting their own T0/2/5/10 cycle.
       `SELECT id, building_id, issue_category, issue_description, ai_urgency, ai_confidence, created_at
        FROM incident
        WHERE ai_urgency IS NOT NULL
          AND decision = 'pending'
          AND night_outcome IS NULL
+         AND linked_incident_id IS NULL
          AND created_at > NOW() - INTERVAL '2 hours'`,
     );
 
@@ -141,6 +146,18 @@ async function wakeStage(incident, stage, role) {
     incident.ai_urgency === 'unclear' ? 'AI IST UNSICHER' : incident.ai_urgency === 'critical' ? 'NOTFALL' : 'DRINGEND';
   const categoryLabel = (incident.issue_category || 'Vorfall').replace(/_/g, ' ');
 
+  // Risk #10: tell the worker up front if multiple tenants reported this
+  // same issue — avoids them thinking it's a single-caller report when 3
+  // people called about one burst pipe.
+  const linkedCount = await db.query(
+    `SELECT COUNT(*) FROM incident WHERE linked_incident_id = $1`,
+    [incident.id],
+  );
+  const extraReporters = parseInt(linkedCount.rows[0].count, 10);
+  const multiCallerNote = extraReporters > 0
+    ? ` (${extraReporters + 1} Anrufer haben dies gemeldet)`
+    : '';
+
   const notifyResult = await notifyHuman({
     recipient: { name: person.name, phone: person.phone },
     purpose: 'wakeup',
@@ -149,7 +166,7 @@ async function wakeStage(incident, stage, role) {
       // Spoken by Twilio TTS on voice calls — must never contain the raw URL,
       // Twilio reads it character-by-character which is unusable on a call.
       // SMS/push get the link separately via actionUrl.
-      body: `${urgencyLabel}: ${categoryLabel}. Bitte öffnen Sie die After Hour Dispatch App für Details und Entscheidung.`,
+      body: `${urgencyLabel}: ${categoryLabel}${multiCallerNote}. Bitte öffnen Sie die After Hour Dispatch App für Details und Entscheidung.`,
       actionUrl: cockpitUrl,
     },
     channels: ['voice_call', 'sms'],
@@ -230,7 +247,7 @@ async function fireFailsafe(incident) {
  * role-tagged schedule entry exists (config-gap safety net, flagged in
  * wakeStage's no_recipient_configured log when even that is missing).
  */
-async function resolveOnCallPerson(buildingId, role) {
+export async function resolveOnCallPerson(buildingId, role) {
   const now = new Date();
   const dayOfWeek = now.getDay();
   const currentTime = now.toTimeString().slice(0, 8);
@@ -292,4 +309,4 @@ async function createCockpitToken(incidentId, role, person) {
   return result.rows[0].token;
 }
 
-export default { runWakeupTick };
+export default { runWakeupTick, resolveOnCallPerson };

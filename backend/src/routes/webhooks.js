@@ -14,6 +14,8 @@ import {
   handleLanguageSelection,
   handleVerification,
   handleQuestionResponse,
+  handleTransferStatus,
+  handleTransferMessage,
 } from '../services/callFlow.js';
 import { handleSpResponse } from '../services/dispatch.js';
 
@@ -152,6 +154,38 @@ router.post('/call/:callId/verify-address-retry', async (req, res) => {
     res.type('text/xml').send(response);
   } catch (error) {
     logger.error('Verify address retry error', { error: error.message });
+    res.status(500).send('Error');
+  }
+});
+
+// Live-transfer outcome (Twilio <Dial> action callback — answered vs no-answer/busy/failed)
+router.post('/call/:callId/transfer-status', async (req, res) => {
+  try {
+    const { callId } = req.params;
+    const dialCallStatus = req.body.DialCallStatus;
+
+    logger.info('Live transfer status', { callId, dialCallStatus });
+
+    const response = await handleTransferStatus(callId, dialCallStatus);
+
+    res.type('text/xml').send(response);
+  } catch (error) {
+    logger.error('Transfer status webhook error', { error: error.message });
+    res.status(500).send('Error');
+  }
+});
+
+// Caller's message after a failed live transfer
+router.post('/call/:callId/transfer-message', async (req, res) => {
+  try {
+    const { callId } = req.params;
+    const spokenInput = req.body.SpeechResult || req.body.speechResult || '';
+
+    const response = await handleTransferMessage(callId, spokenInput);
+
+    res.type('text/xml').send(response);
+  } catch (error) {
+    logger.error('Transfer message webhook error', { error: error.message });
     res.status(500).send('Error');
   }
 });

@@ -9,6 +9,7 @@ import { authenticateToken } from '../middleware/auth.js';
 import { logger } from '../utils/logger.js';
 import { determineRequiredTrade } from '../services/tradeMapping.js';
 import { GuidedQuestions } from '../providers/voiceai/index.js';
+import { decryptBuildingCodes } from './buildings.js';
 
 /**
  * Labels raw guided_answers ({problem: "...", danger_type: "..."}) with the
@@ -320,7 +321,8 @@ router.get('/:id/mobile-detail', async (req, res) => {
     if (incidentResult.rows.length === 0) {
       return res.status(404).json({ error: 'not_found' });
     }
-    const incident = incidentResult.rows[0];
+    // Blocker #4: decrypt before this row's code fields are read anywhere below.
+    const incident = decryptBuildingCodes(incidentResult.rows[0]);
 
     const requiredTrade = determineRequiredTrade(incident.issue_category);
     const spList = await db.query(

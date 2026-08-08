@@ -18,6 +18,37 @@ export const IssueCategories = {
   OTHER: 'other',
 };
 
+/**
+ * Risk #6 (2026-08-08 Go/No-Go audit): emergency classification was 100% the
+ * LLM's own judgment call with no independent backstop — if classifyIssue
+ * under-called a real emergency (bad transcript, model miss, non-JSON
+ * response falling into the catch block above), nothing else caught it.
+ * This is a plain keyword scan run in PARALLEL with the LLM result, not
+ * instead of it — deliberately biased toward false positives (an
+ * unnecessary page) over false negatives (a missed real emergency). Matches
+ * the same DE/EN word list used server-side in voice-brain's language-menu
+ * urgent-word detection (retell-llm.gateway.ts) for consistency, extended
+ * with a few English/German words specific to this classifier's categories.
+ */
+const EMERGENCY_KEYWORDS = /gas|feuer|fire|rauch|smoke|brennt|burning|wasser.*(rohr|leck)|water.*(leak|pipe|flooding|flood)|überschwemmung|hilfe|help|notfall|emergency|kein strom|no (power|electricity)|stromausfall|power outage|can'?t breathe|keine luft/i;
+
+/**
+ * Returns true if the raw transcript/guided-answer text contains an obvious
+ * emergency keyword that the LLM's own classification result did NOT already
+ * flag as an emergency. Callers should force escalation on true, regardless
+ * of the LLM's confidence score.
+ */
+export function keywordBackstopDetectsEmergency(conversationContext, guidedAnswers, llmResult) {
+  if (llmResult?.isEmergency) return false; // LLM already caught it, nothing to add
+
+  const combinedText = [
+    conversationContext || '',
+    ...Object.values(guidedAnswers || {}),
+  ].join(' ');
+
+  return EMERGENCY_KEYWORDS.test(combinedText);
+}
+
 // Guided questions flow (in order)
 export const GuidedQuestions = {
   de: [

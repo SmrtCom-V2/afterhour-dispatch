@@ -143,6 +143,21 @@ class TwilioProvider {
         case 'pause':
           response.pause({ length: action.seconds || 1 });
           break;
+
+        case 'dial': {
+          // Bridges the on-call worker's real number into this same live call.
+          // callerId stays the FM company's After Hour number, not the tenant's
+          // real number and not the worker's — so neither side ever sees the
+          // other's actual phone number (masked transfer, per Ron's Aug 8 spec).
+          const dial = response.dial({
+            timeout: action.timeoutSeconds || 20,
+            callerId: this.phoneNumber,
+            action: action.statusWebhookUrl, // hit when the dial completes/fails, drives the no-answer fallback
+            method: 'POST',
+          });
+          dial.number(action.to);
+          break;
+        }
       }
     }
 
@@ -191,6 +206,11 @@ class MockTelephonyProvider {
   }
 
   generateCallResponse(actions) {
+    for (const action of actions) {
+      if (action.type === 'dial') {
+        logger.info('[MOCK] Dial (live transfer)', { to: action.to, timeoutSeconds: action.timeoutSeconds });
+      }
+    }
     return JSON.stringify({ actions }, null, 2);
   }
 }
