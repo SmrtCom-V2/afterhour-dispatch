@@ -22,6 +22,7 @@ import { getVoiceAIProvider, GuidedQuestions, VerificationPrompts, BusinessHours
 import { getTelephonyProvider } from '../providers/telephony/index.js';
 import { config } from '../config/index.js';
 import { resolveOnCallPerson } from './wakeupEngine.js';
+import { encryptPhone, decryptPhone, hashPhone } from '../utils/piiCrypto.js';
 
 /**
  * Live transfer (Aug 8 2026 — overrides Night Ops D1's original "AI never
@@ -85,12 +86,16 @@ export async function handleIncomingCall(callData) {
   // (rather than a plain INSERT) means a retry replays the same response
   // instead of creating a second call + incident row and paging the on-call
   // worker twice for one phone call. See add_call_provider_id_dedupe.sql.
+  // Blocker #1 (2026-08-08 audit): caller_phone/tenant_phone_given are now
+  // stored encrypted (piiCrypto.js). *_hash is a deterministic HMAC of the
+  // same number, written alongside so tenant lookup below can still match
+  // by phone without the DB holding the plaintext.
   const callRecord = await db.query(
-    `INSERT INTO call (fm_company_id, caller_phone, call_provider_id, language)
-     VALUES ($1, $2, $3, 'de')
+    `INSERT INTO call (fm_company_id, caller_phone, caller_phone_hash, call_provider_id, language)
+     VALUES ($1, $2, $3, $4, 'de')
      ON CONFLICT (call_provider_id) WHERE (call_provider_id IS NOT NULL) DO NOTHING
      RETURNING id`,
-    [fmCompany.id, from, callId]
+    [fmCompany.id, encryptPhone(from), hashPhone(from), callId]
   );
 
   let internalCallId;
@@ -99,29 +104,31 @@ export async function handleIncomingCall(callData) {
   if (callRecord.rows.length > 0) {
     internalCallId = callRecord.rows[0].id;
 
-    // Try to find tenant by phone
+    // Try to find tenant by phone (matched via phone_hash, not the encrypted column)
     const tenantResult = await db.query(
       `SELECT t.*, b.id as building_id, b.name as building_name, b.address as building_address,
               b.ai_confidence_override
        FROM tenant t
        JOIN building b ON t.building_id = b.id
        JOIN pm_company pm ON b.pm_company_id = pm.id
-       WHERE t.phone = $1 AND pm.fm_company_id = $2 AND t.status = 'active'`,
-      [from, fmCompany.id]
+       WHERE t.phone_hash = $1 AND pm.fm_company_id = $2 AND t.status = 'active'`,
+      [hashPhone(from), fmCompany.id]
     );
 
     const possibleTenant = tenantResult.rows[0] || null;
+    if (possibleTenant) possibleTenant.phone = decryptPhone(possibleTenant.phone);
 
     // Create incident record
     const incidentResult = await db.query(
-      `INSERT INTO incident (call_id, building_id, tenant_id, tenant_phone_given, verification_status)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO incident (call_id, building_id, tenant_id, tenant_phone_given, tenant_phone_given_hash, verification_status)
+       VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING id`,
       [
         internalCallId,
         possibleTenant?.building_id || null,
         possibleTenant?.id || null,
-        from,
+        encryptPhone(from),
+        hashPhone(from),
         possibleTenant ? 'pending' : 'pending',
       ]
     );
@@ -782,7 +789,7 @@ async function escalateUnverified(incidentId) {
 
   const message = `UNVERIFIED CALLER
 
-Phone: ${incident.tenant_phone_given || 'Unknown'}
+Phone: ${decryptPhone(incident.tenant_phone_given) || 'Unknown'}
 Name given: ${incident.tenant_name_given || 'Unknown'}
 Address given: ${incident.tenant_address_given || 'Unknown'}
 

@@ -10,6 +10,7 @@ import { logger } from '../utils/logger.js';
 import { determineRequiredTrade } from '../services/tradeMapping.js';
 import { GuidedQuestions } from '../providers/voiceai/index.js';
 import { decryptBuildingCodes } from './buildings.js';
+import { decryptPiiFields } from '../utils/piiCrypto.js';
 
 /**
  * Labels raw guided_answers ({problem: "...", danger_type: "..."}) with the
@@ -121,7 +122,7 @@ router.get('/', async (req, res) => {
     const countResult = await db.query(countQuery, countParams);
 
     res.json({
-      incidents: result.rows,
+      incidents: result.rows.map(decryptPiiFields),
       total: parseInt(countResult.rows[0].count),
       limit: parseInt(limit),
       offset: parseInt(offset),
@@ -231,7 +232,8 @@ router.get('/:id', async (req, res) => {
       `SELECT i.*,
               b.name as building_name, b.address as building_address,
               sp.company_name as sp_company_name, sp.phone as sp_phone,
-              t.name as tenant_name, t.phone as tenant_phone, t.unit as tenant_unit
+              t.name as tenant_name, t.phone as tenant_phone, t.unit as tenant_unit,
+              c.language as call_language
        FROM incident i
        LEFT JOIN building b ON i.building_id = b.id
        LEFT JOIN pm_company pm ON b.pm_company_id = pm.id
@@ -275,7 +277,7 @@ router.get('/:id', async (req, res) => {
     );
 
     res.json({
-      incident: incidentResult.rows[0],
+      incident: decryptPiiFields(incidentResult.rows[0]),
       timeline: timelineResult.rows,
       dispatchAttempts: dispatchResult.rows,
       spReport: reportResult.rows[0] || null,
@@ -321,8 +323,8 @@ router.get('/:id/mobile-detail', async (req, res) => {
     if (incidentResult.rows.length === 0) {
       return res.status(404).json({ error: 'not_found' });
     }
-    // Blocker #4: decrypt before this row's code fields are read anywhere below.
-    const incident = decryptBuildingCodes(incidentResult.rows[0]);
+    // Blocker #4/#1: decrypt before this row's code/phone fields are read anywhere below.
+    const incident = decryptPiiFields(decryptBuildingCodes(incidentResult.rows[0]));
 
     const requiredTrade = determineRequiredTrade(incident.issue_category);
     const spList = await db.query(
@@ -430,6 +432,87 @@ router.put('/:id/close', async (req, res) => {
   } catch (error) {
     logger.error('Error closing incident', { error: error.message });
     res.status(500).json({ error: 'Failed to close incident' });
+  }
+});
+
+// POST /api/incidents/:id/translate - Translate this incident's summary into
+// the requesting operator's dashboard language. Real tenant-emergency text —
+// this is a live translation of a safety-relevant record, not decorative
+// copy, so failures must surface clearly (never silently return the
+// original re-labeled as a translation) and must never block the page: the
+// frontend already has the original text and shows it regardless of whether
+// this call succeeds.
+router.post('/:id/translate', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { targetLanguage } = req.body;
+    const supported = ['de', 'en'];
+    if (!supported.includes(targetLanguage)) {
+      return res.status(400).json({ error: `targetLanguage must be one of: ${supported.join(', ')}` });
+    }
+
+    const result = await db.query(
+      `SELECT i.issue_description
+       FROM incident i
+       LEFT JOIN building b ON i.building_id = b.id
+       LEFT JOIN pm_company pm ON b.pm_company_id = pm.id
+       LEFT JOIN call c ON i.call_id = c.id
+       WHERE i.id = $1 AND (pm.fm_company_id = $2 OR c.fm_company_id = $2)`,
+      [id, req.user.fm_company_id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Incident not found' });
+    }
+
+    const original = result.rows[0].issue_description;
+    if (!original) {
+      return res.status(404).json({ error: 'This incident has no summary text to translate' });
+    }
+
+    if (!process.env.ANTHROPIC_API_KEY) {
+      logger.error('Translate requested but ANTHROPIC_API_KEY not configured');
+      return res.status(503).json({ error: 'Translation is not configured on this server' });
+    }
+
+    const targetName = targetLanguage === 'de' ? 'German' : 'English';
+    const anthropicRes = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 512,
+        system:
+          `Translate the given property-management incident report into ${targetName}. ` +
+          `This is a factual record of a real tenant call — preserve every detail exactly ` +
+          `(names, addresses, room/unit numbers, what was reported as unclear or uncertain). ` +
+          `Do not add commentary, do not summarize further, do not omit anything. ` +
+          `Reply with ONLY the translated text, nothing else.`,
+        messages: [{ role: 'user', content: original }],
+      }),
+    });
+
+    if (!anthropicRes.ok) {
+      const errBody = await anthropicRes.text();
+      logger.error('Translation API call failed', { status: anthropicRes.status, errBody });
+      return res.status(502).json({ error: 'Translation failed' });
+    }
+
+    const data = await anthropicRes.json();
+    const translated = data.content?.[0]?.text?.trim();
+    if (!translated) {
+      logger.error('Translation API returned no text', { incidentId: id });
+      return res.status(502).json({ error: 'Translation failed' });
+    }
+
+    res.json({ original, translated, targetLanguage });
+  } catch (error) {
+    logger.error('Error translating incident summary', { error: error.message });
+    res.status(500).json({ error: 'Failed to translate summary' });
   }
 });
 

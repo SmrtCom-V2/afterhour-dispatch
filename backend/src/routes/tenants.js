@@ -7,6 +7,7 @@ import { Router } from 'express';
 import { db } from '../db/index.js';
 import { authenticateToken } from '../middleware/auth.js';
 import { logger } from '../utils/logger.js';
+import { encryptPhone, decryptPhone, hashPhone } from '../utils/piiCrypto.js';
 
 const router = Router();
 
@@ -44,8 +45,9 @@ router.get('/', async (req, res) => {
     query += ' ORDER BY b.name, t.unit, t.name';
 
     const result = await db.query(query, params);
+    const tenants = result.rows.map((t) => ({ ...t, phone: decryptPhone(t.phone) }));
 
-    res.json({ tenants: result.rows });
+    res.json({ tenants });
   } catch (error) {
     logger.error('Error fetching tenants', { error: error.message });
     res.status(500).json({ error: 'Failed to fetch tenants' });
@@ -70,7 +72,7 @@ router.get('/:id', async (req, res) => {
       return res.status(404).json({ error: 'Tenant not found' });
     }
 
-    res.json({ tenant: result.rows[0] });
+    res.json({ tenant: { ...result.rows[0], phone: decryptPhone(result.rows[0].phone) } });
   } catch (error) {
     logger.error('Error fetching tenant', { error: error.message });
     res.status(500).json({ error: 'Failed to fetch tenant' });
@@ -99,15 +101,15 @@ router.post('/', async (req, res) => {
     }
 
     const result = await db.query(
-      `INSERT INTO tenant (building_id, name, phone, unit, status)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO tenant (building_id, name, phone, phone_hash, unit, status)
+       VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING *`,
-      [buildingId, name, phone, unit, status || 'active']
+      [buildingId, name, encryptPhone(phone), hashPhone(phone), unit, status || 'active']
     );
 
     logger.info('Tenant created', { tenantId: result.rows[0].id, buildingId });
 
-    res.status(201).json({ tenant: result.rows[0] });
+    res.status(201).json({ tenant: { ...result.rows[0], phone: decryptPhone(result.rows[0].phone) } });
   } catch (error) {
     logger.error('Error creating tenant', { error: error.message });
     res.status(500).json({ error: 'Failed to create tenant' });
@@ -137,16 +139,17 @@ router.put('/:id', async (req, res) => {
       `UPDATE tenant SET
          name = COALESCE($1, name),
          phone = COALESCE($2, phone),
-         unit = COALESCE($3, unit),
-         status = COALESCE($4, status)
-       WHERE id = $5
+         phone_hash = COALESCE($3, phone_hash),
+         unit = COALESCE($4, unit),
+         status = COALESCE($5, status)
+       WHERE id = $6
        RETURNING *`,
-      [name, phone, unit, status, id]
+      [name, encryptPhone(phone), hashPhone(phone), unit, status, id]
     );
 
     logger.info('Tenant updated', { tenantId: id });
 
-    res.json({ tenant: result.rows[0] });
+    res.json({ tenant: { ...result.rows[0], phone: decryptPhone(result.rows[0].phone) } });
   } catch (error) {
     logger.error('Error updating tenant', { error: error.message });
     res.status(500).json({ error: 'Failed to update tenant' });
@@ -218,12 +221,12 @@ router.post('/bulk', async (req, res) => {
 
       try {
         const result = await db.query(
-          `INSERT INTO tenant (building_id, name, phone, unit, status)
-           VALUES ($1, $2, $3, $4, 'active')
+          `INSERT INTO tenant (building_id, name, phone, phone_hash, unit, status)
+           VALUES ($1, $2, $3, $4, $5, 'active')
            RETURNING *`,
-          [buildingId, tenant.name, tenant.phone, tenant.unit]
+          [buildingId, tenant.name, encryptPhone(tenant.phone), hashPhone(tenant.phone), tenant.unit]
         );
-        inserted.push(result.rows[0]);
+        inserted.push({ ...result.rows[0], phone: decryptPhone(result.rows[0].phone) });
       } catch (err) {
         errors.push({ tenant, error: err.message });
       }

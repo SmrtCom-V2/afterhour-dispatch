@@ -26,7 +26,7 @@ router.post('/', async (req, res) => {
     await db.query(
       `INSERT INTO device_token (fm_admin_id, fcm_token, platform, last_seen_at)
        VALUES ($1, $2, $3, NOW())
-       ON CONFLICT (fcm_token) DO UPDATE SET fm_admin_id = $1, last_seen_at = NOW()`,
+       ON CONFLICT (fcm_token) DO UPDATE SET fm_admin_id = $1, platform = $3, last_seen_at = NOW()`,
       [req.user.id, fcmToken, platform || 'android'],
     );
 

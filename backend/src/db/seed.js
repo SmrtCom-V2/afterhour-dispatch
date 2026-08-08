@@ -6,6 +6,7 @@
 import pg from 'pg';
 import bcrypt from 'bcrypt';
 import dotenv from 'dotenv';
+import { encryptPhone, hashPhone } from '../utils/piiCrypto.js';
 
 dotenv.config();
 
@@ -130,14 +131,18 @@ async function seed() {
     const building2Id = buildingResult.rows[1].id;
 
     // Create Tenants
-    await pool.query(
-      `INSERT INTO tenant (building_id, name, phone, unit, status)
-       VALUES
-         ($1, 'Max Mustermann', '+49170111222', '1A', 'active'),
-         ($1, 'Erika Musterfrau', '+49170333444', '2B', 'active'),
-         ($2, 'Hans Schmidt', '+49170555666', '3A', 'active')`,
-      [building1Id, building2Id]
-    );
+    const tenantSeeds = [
+      { buildingId: building1Id, name: 'Max Mustermann', phone: '+49170111222', unit: '1A' },
+      { buildingId: building1Id, name: 'Erika Musterfrau', phone: '+49170333444', unit: '2B' },
+      { buildingId: building2Id, name: 'Hans Schmidt', phone: '+49170555666', unit: '3A' },
+    ];
+    for (const t of tenantSeeds) {
+      await pool.query(
+        `INSERT INTO tenant (building_id, name, phone, phone_hash, unit, status)
+         VALUES ($1, $2, $3, $4, $5, 'active')`,
+        [t.buildingId, t.name, encryptPhone(t.phone), hashPhone(t.phone), t.unit]
+      );
+    }
     console.log('Created Tenants');
 
     // Create Service Providers
@@ -165,26 +170,28 @@ async function seed() {
     console.log('Assigned Service Providers to Buildings');
 
     // Create sample incident
+    const sampleCallerPhone = '+49170111222';
     const callResult = await pool.query(
-      `INSERT INTO call (fm_company_id, caller_phone, language)
-       VALUES ($1, '+49170111222', 'de')
+      `INSERT INTO call (fm_company_id, caller_phone, caller_phone_hash, language)
+       VALUES ($1, $2, $3, 'de')
        RETURNING id`,
-      [fmCompanyId]
+      [fmCompanyId, encryptPhone(sampleCallerPhone), hashPhone(sampleCallerPhone)]
     );
 
     await pool.query(
       `INSERT INTO incident (
          call_id, building_id,
-         tenant_name_given, tenant_phone_given, tenant_address_given,
+         tenant_name_given, tenant_phone_given, tenant_phone_given_hash, tenant_address_given,
          verification_status, issue_category, issue_description,
          guided_answers, ai_confidence, is_emergency, decision, status
        )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
       [
         callResult.rows[0].id,
         building1Id,
         'Max Mustermann',
-        '+49170111222',
+        encryptPhone(sampleCallerPhone),
+        hashPhone(sampleCallerPhone),
         'Hauptstraße 10',
         'verified',
         'water_leak',

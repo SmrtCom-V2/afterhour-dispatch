@@ -44,7 +44,7 @@ export async function sendPushToAdmin(adminId, { title, body, data = {} }) {
   const app = await getFirebaseApp();
   if (!app) return false;
 
-  const tokens = await db.query('SELECT fcm_token FROM device_token WHERE fm_admin_id = $1', [adminId]);
+  const tokens = await db.query('SELECT fcm_token, platform FROM device_token WHERE fm_admin_id = $1', [adminId]);
   if (tokens.rows.length === 0) {
     logger.info('sendPushToAdmin: no registered devices', { adminId });
     return false;
@@ -55,11 +55,20 @@ export async function sendPushToAdmin(adminId, { title, body, data = {} }) {
 
   for (const row of tokens.rows) {
     try {
+      // Blocker (2026-08-08 Go/No-Go audit): android.priority='high' was sent
+      // unconditionally, including to iOS-registered tokens — FCM silently
+      // ignores that block for iOS, so a backgrounded iPhone never got the
+      // high-priority wake used for emergency alerts. apns-priority 10 +
+      // content-available is the iOS equivalent (required for background delivery).
+      const priorityConfig = row.platform === 'ios'
+        ? { apns: { headers: { 'apns-priority': '10' }, payload: { aps: { 'content-available': 1 } } } }
+        : { android: { priority: 'high' } };
+
       await getMessaging(app).send({
         token: row.fcm_token,
         notification: { title, body },
         data: Object.fromEntries(Object.entries(data).map(([k, v]) => [k, String(v)])),
-        android: { priority: 'high' },
+        ...priorityConfig,
       });
       anySent = true;
     } catch (error) {

@@ -13,6 +13,7 @@ import { startDispatch } from '../services/dispatch.js';
 import { determineRequiredTrade } from '../services/tradeMapping.js';
 import { GuidedQuestions } from '../providers/voiceai/index.js';
 import { decryptBuildingCodes } from './buildings.js';
+import { decryptPiiFields } from '../utils/piiCrypto.js';
 
 const router = express.Router();
 
@@ -79,8 +80,8 @@ router.get('/:token', async (req, res) => {
     );
     if (incidentResult.rows.length === 0) return res.status(404).json({ error: 'incident_not_found' });
     // Decrypt immediately, before hasSensitiveCodes/anything else reads
-    // these fields (Blocker #4) — keeps every downstream use consistent.
-    const incident = decryptBuildingCodes(incidentResult.rows[0]);
+    // these fields (Blocker #4/#1) — keeps every downstream use consistent.
+    const incident = decryptPiiFields(decryptBuildingCodes(incidentResult.rows[0]));
 
     // History: recent incidents at this building (pattern recognition).
     const history = await db.query(

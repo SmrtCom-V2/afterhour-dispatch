@@ -57,6 +57,7 @@
 
 import { db } from '../db/index.js';
 import { logger } from '../utils/logger.js';
+import { decryptPiiFields } from '../utils/piiCrypto.js';
 
 const REDACTED_EMAIL_DOMAIN = 'deleted.invalid';
 
@@ -94,6 +95,7 @@ async function anonymizeTenantsForCompany(client, fmCompanyId) {
     `UPDATE tenant t
      SET name = '[deleted]',
          phone = '000000000',
+         phone_hash = NULL,
          email = NULL,
          secondary_phone = NULL,
          notes = NULL,
@@ -142,7 +144,8 @@ async function scrubCallContentForCompany(client, fmCompanyId) {
   const result = await client.query(
     `UPDATE call
      SET transcript = NULL,
-         caller_phone = '000000000'
+         caller_phone = '000000000',
+         caller_phone_hash = NULL
      WHERE fm_company_id = $1
        AND transcript IS NOT NULL
      RETURNING id`,
@@ -162,6 +165,7 @@ async function scrubIncidentCapturedPiiForCompany(client, fmCompanyId) {
     `UPDATE incident i
      SET tenant_name_given = '[deleted]',
          tenant_phone_given = '000000000',
+         tenant_phone_given_hash = NULL,
          tenant_address_given = NULL
      FROM call c
      WHERE i.call_id = c.id
@@ -270,6 +274,7 @@ export async function buildDataExport({ adminId }) {
      WHERE pm.fm_company_id = $1`,
     [companyResult.rows[0]?.id]
   ).catch(() => ({ rows: [] }));
+  tenantsResult.rows = tenantsResult.rows.map(decryptPiiFields);
 
   const employeesResult = await db.query(
     `SELECT id, name, email, phone, role, created_at FROM fm_employee WHERE fm_company_id = $1`,

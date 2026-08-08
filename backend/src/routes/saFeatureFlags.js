@@ -12,7 +12,9 @@ const router = Router();
 // Default feature flags with descriptions
 const DEFAULT_FLAGS = [
   { key: 'incident_management', name: 'Incident Management', description: 'Core incident tracking and management', category: 'core', default_enabled: true },
-  { key: 'call_recording', name: 'Call Recording', description: 'Record and store customer calls', category: 'calls', default_enabled: true },
+  // Disabled 2026-08-08 (Go/No-Go audit, Blocker #2): flag had zero backing implementation
+  // (no recording_url column, no storage write path) — was falsely advertising a working feature.
+  { key: 'call_recording', name: 'Call Recording', description: 'Record and store customer calls', category: 'calls', default_enabled: false },
   { key: 'sp_reports', name: 'SP Reports', description: 'Service provider reporting portal', category: 'reports', default_enabled: true },
   { key: 'bulk_operations', name: 'Bulk Operations', description: 'Allow bulk editing of records', category: 'core', default_enabled: false },
   { key: 'api_access', name: 'API Access', description: 'REST API access for integrations', category: 'integrations', default_enabled: false },
