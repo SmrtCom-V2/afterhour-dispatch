@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { saApi } from '../api';
+import { SA_API_URL } from '../../utils/apiConfig';
 
 const EXPORT_TYPES = [
   { id: 'companies', name: 'Companies', description: 'All FM companies with plan and status', icon: 'C' },
@@ -32,7 +33,6 @@ export function SaExport() {
       if (format === 'csv') {
         // For CSV, trigger download
         const token = localStorage.getItem('sa_token');
-        const SA_API_URL = import.meta.env.VITE_SA_API_URL || 'http://localhost:3001/sa';
         const response = await fetch(`${SA_API_URL}${endpoint}`, {
           headers: {
             'Authorization': `Bearer ${token}`,

@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001/api';
+import { API_URL } from '../utils/apiConfig';
 
 const URGENCY_LABEL = {
   critical: { text: 'NOTFALL', color: '#ef4444' },

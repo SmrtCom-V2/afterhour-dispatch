@@ -3,7 +3,7 @@
  * Handles all API calls to the backend
  */
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001/api';
+import { API_URL } from './apiConfig';
 
 class ApiClient {
   constructor() {
@@ -39,7 +39,12 @@ class ApiClient {
     const data = await response.json();
 
     if (!response.ok) {
-      if (response.status === 401) {
+      // A 401 on an *authenticated* request means the session died — bounce to
+      // login. A 401 from the login/credential endpoints themselves just means
+      // "wrong password": redirecting there hard-reloads the page and destroys
+      // the React error state before it can render, so the user sees a silently
+      // cleared form and no message at all. Let those throw normally instead.
+      if (response.status === 401 && !options.skipAuthRedirect) {
         this.setToken(null);
         window.location.href = '/login';
       }
@@ -54,6 +59,7 @@ class ApiClient {
     const data = await this.request('/auth/login', {
       method: 'POST',
       body: JSON.stringify({ email, password }),
+      skipAuthRedirect: true,
     });
     this.setToken(data.token);
     return data;
@@ -238,6 +244,13 @@ class ApiClient {
     return this.request(`/incidents/${id}/close`, {
       method: 'PUT',
       body: JSON.stringify({ reason }),
+    });
+  }
+
+  async translateIncidentSummary(id, targetLanguage) {
+    return this.request(`/incidents/${id}/translate`, {
+      method: 'POST',
+      body: JSON.stringify({ targetLanguage }),
     });
   }
 

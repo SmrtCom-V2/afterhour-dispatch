@@ -1,4 +1,4 @@
-const SA_API_URL = import.meta.env.VITE_SA_API_URL || 'http://localhost:3001/sa';
+import { SA_API_URL } from '../utils/apiConfig';
 
 class SaApiClient {
   constructor() {
