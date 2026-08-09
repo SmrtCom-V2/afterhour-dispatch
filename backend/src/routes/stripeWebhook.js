@@ -12,6 +12,8 @@ import express from 'express';
 import { db } from '../db/index.js';
 import { logger } from '../utils/logger.js';
 import { sendEmail } from '../utils/email.js';
+import { grantAfterHourEntitlement, revokeAfterHourEntitlement } from '../services/identityService.js';
+import { getFrontendUrl } from '../utils/frontendUrl.js';
 
 const router = Router();
 
@@ -120,6 +122,15 @@ async function handleCheckoutCompleted(session) {
      VALUES ($1, 'subscription_started', 'system', $2)`,
     [companyId, JSON.stringify({ sessionId: session.id })]
   );
+
+  // Sprint 4: the actual "one click" moment — a real paid subscription grants
+  // the shared identity-service entitlement so the cross-product nav can show
+  // this company also has After Hour, the moment they check out. Best-effort:
+  // if this call fails, Stripe's own webhook retry (or a manual re-run of the
+  // Sprint 3 reconciliation script) recovers it — it must never fail this
+  // webhook's 200 ack, since Stripe would then retry a checkout that already
+  // succeeded in this product's own database.
+  await grantAfterHourEntitlement(companyId, `stripe:${session.subscription}`);
 }
 
 /**
@@ -167,10 +178,15 @@ async function handleSubscriptionUpdate(subscription) {
   if (subscription.status === 'canceled') companyStatus = 'cancelled';
   if (subscription.status === 'unpaid') companyStatus = 'suspended';
 
+  // Clear past_due_since whenever the subscription is no longer past_due —
+  // covers recovery (back to active) as well as cancellation/suspension,
+  // so a stale grace-period timestamp never lingers once it's no longer
+  // the relevant state.
   await db.query(
     `UPDATE fm_company SET
       status = $1,
       current_period_end_at = to_timestamp($2),
+      past_due_since = CASE WHEN $1 = 'past_due' THEN past_due_since ELSE NULL END,
       updated_at = NOW()
      WHERE id = $3`,
     [companyStatus, subscription.current_period_end, companyId]
@@ -216,6 +232,10 @@ async function handleSubscriptionDeleted(subscription) {
   );
 
   logger.info('Subscription cancelled', { companyId });
+
+  // Sprint 4: mirror the grant above — cancellation revokes the shared
+  // entitlement too, same best-effort contract (never blocks this webhook).
+  await revokeAfterHourEntitlement(companyId);
 }
 
 /**
@@ -270,9 +290,21 @@ async function handleInvoicePaymentFailed(invoice) {
 
   const { company_id, owner_email, company_name } = result.rows[0];
 
-  // Update company status
+  // past_due_since is only set on the FIRST failure in a dunning cycle —
+  // Stripe's own Smart Retries (account-level Dashboard setting, not
+  // configurable from this codebase) will re-fire invoice.payment_failed on
+  // each subsequent retry attempt over the retry window; COALESCE keeps the
+  // grace-period clock anchored to the original failure, not restarted by
+  // every retry. requireActiveSubscription.js reads this timestamp to allow
+  // continued access for 7 days (Ron's decision 2026-07-30) before actually
+  // blocking — status alone used to block on the very first failed charge,
+  // with no grace period at all.
   await db.query(
-    `UPDATE fm_company SET status = 'past_due', updated_at = NOW() WHERE id = $1`,
+    `UPDATE fm_company
+     SET status = 'past_due',
+         past_due_since = COALESCE(past_due_since, NOW()),
+         updated_at = NOW()
+     WHERE id = $1`,
     [company_id]
   );
 
@@ -302,10 +334,10 @@ async function handleInvoicePaymentFailed(invoice) {
                 We were unable to process your payment for <strong>${company_name}</strong>.
               </p>
               <p style="color: #475569; line-height: 1.6;">
-                Please update your payment method to continue using 24-7 Dispatch without interruption.
+                Your account stays active for 7 days while we retry the charge — please update your payment method before then to avoid any interruption.
               </p>
               <div style="text-align: center; margin: 30px 0;">
-                <a href="${process.env.FRONTEND_URL || 'http://localhost:5175'}/settings" style="
+                <a href="${getFrontendUrl()}/settings" style="
                   display: inline-block;
                   background: #3B82F6;
                   color: white;

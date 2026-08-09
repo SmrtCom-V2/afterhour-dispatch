@@ -274,13 +274,24 @@ async function createPDF(pmCompany, incidents, reportDate, handoffIncidents = []
 }
 
 /**
- * Get yesterday's date in YYYY-MM-DD format
+ * Get yesterday's date in YYYY-MM-DD format.
+ *
+ * Exported because the report's date is its identity: a report generated at
+ * 07:00 covers *yesterday's* incidents and is stored under yesterday's
+ * report_date. Any caller that needs to find or update that row must use this
+ * same value. scheduler.js previously used `new Date()` (today) in its
+ * post-send UPDATE, so the WHERE clause never matched a row and sent_at/sent_to
+ * were never written for any report ever sent (confirmed 2026-08-09: all 4 rows
+ * in morning_report had NULL sent_at despite the job logging success).
  */
-function getYesterdayDate() {
+export function getReportDate() {
   const date = new Date();
   date.setDate(date.getDate() - 1);
   return date.toISOString().split('T')[0];
 }
+
+// Internal alias — kept so the existing call sites below read naturally.
+const getYesterdayDate = getReportDate;
 
 /**
  * Get all PM companies that need reports

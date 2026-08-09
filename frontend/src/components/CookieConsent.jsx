@@ -1,10 +1,12 @@
 import { useState, useEffect } from 'react';
+import { useLanguage } from '../context/LanguageContext';
 import './CookieConsent.css';
 
 const COOKIE_CONSENT_KEY = 'cookie_consent';
 const COOKIE_PREFERENCES_KEY = 'cookie_preferences';
 
 export function CookieConsent() {
+  const { t } = useLanguage();
   const [visible, setVisible] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [preferences, setPreferences] = useState({
@@ -99,30 +101,26 @@ export function CookieConsent() {
                 </svg>
               </div>
               <div className="cookie-consent-text">
-                <h3>We use cookies</h3>
-                <p>
-                  We use cookies to improve your experience, analyze site traffic, and for security.
-                  By clicking "Accept All", you consent to our use of cookies.
-                  You can customize your preferences or reject non-essential cookies.
-                </p>
+                <h3>{t('cookieTitle')}</h3>
+                <p>{t('cookieBody')}</p>
               </div>
             </div>
             <div className="cookie-consent-actions">
               <button className="cookie-btn cookie-btn-secondary" onClick={handleRejectAll}>
-                Reject All
+                {t('cookieRejectAll')}
               </button>
               <button className="cookie-btn cookie-btn-secondary" onClick={() => setShowSettings(true)}>
-                Customize
+                {t('cookieCustomize')}
               </button>
               <button className="cookie-btn cookie-btn-primary" onClick={handleAcceptAll}>
-                Accept All
+                {t('cookieAcceptAll')}
               </button>
             </div>
           </>
         ) : (
           <>
             <div className="cookie-consent-header">
-              <h3>Cookie Preferences</h3>
+              <h3>{t('cookiePreferences')}</h3>
               <button className="cookie-close-btn" onClick={() => setShowSettings(false)}>
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <line x1="18" y1="6" x2="6" y2="18" />
@@ -134,8 +132,8 @@ export function CookieConsent() {
               <div className="cookie-category">
                 <div className="cookie-category-header">
                   <div className="cookie-category-info">
-                    <h4>Essential Cookies</h4>
-                    <p>Required for the website to function. Cannot be disabled.</p>
+                    <h4>{t('cookieEssentialTitle')}</h4>
+                    <p>{t('cookieEssentialDesc')}</p>
                   </div>
                   <label className="cookie-toggle disabled">
                     <input type="checkbox" checked disabled />
@@ -147,8 +145,8 @@ export function CookieConsent() {
               <div className="cookie-category">
                 <div className="cookie-category-header">
                   <div className="cookie-category-info">
-                    <h4>Analytics Cookies</h4>
-                    <p>Help us understand how visitors interact with our website.</p>
+                    <h4>{t('cookieAnalyticsTitle')}</h4>
+                    <p>{t('cookieAnalyticsDesc')}</p>
                   </div>
                   <label className="cookie-toggle">
                     <input
@@ -164,8 +162,8 @@ export function CookieConsent() {
               <div className="cookie-category">
                 <div className="cookie-category-header">
                   <div className="cookie-category-info">
-                    <h4>Functional Cookies</h4>
-                    <p>Enable personalized features and remember your preferences.</p>
+                    <h4>{t('cookieFunctionalTitle')}</h4>
+                    <p>{t('cookieFunctionalDesc')}</p>
                   </div>
                   <label className="cookie-toggle">
                     <input
@@ -180,17 +178,17 @@ export function CookieConsent() {
             </div>
             <div className="cookie-consent-actions">
               <button className="cookie-btn cookie-btn-secondary" onClick={handleRejectAll}>
-                Reject All
+                {t('cookieRejectAll')}
               </button>
               <button className="cookie-btn cookie-btn-primary" onClick={handleSavePreferences}>
-                Save Preferences
+                {t('cookieSavePreferences')}
               </button>
             </div>
           </>
         )}
 
         <div className="cookie-consent-footer">
-          <a href="/privacy" target="_blank" rel="noopener noreferrer">Privacy Policy</a>
+          <a href="/privacy" target="_blank" rel="noopener noreferrer">{t('cookiePrivacyPolicy')}</a>
           <span className="cookie-footer-divider">|</span>
           <a href="/impressum" target="_blank" rel="noopener noreferrer">Impressum</a>
         </div>

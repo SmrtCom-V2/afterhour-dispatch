@@ -1,4 +1,4 @@
-import { createContext, useContext, useState } from 'react';
+import { createContext, useContext, useState, useEffect } from 'react';
 
 // Translation strings
 const translations = {
@@ -551,6 +551,24 @@ const translations = {
     emailVerified: 'E-Mail bestätigt!',
     emailVerifiedSuccess: 'Ihre E-Mail wurde erfolgreich bestätigt. Sie haben jetzt vollen Zugriff auf alle Funktionen.',
     noVerificationToken: 'Kein Bestätigungstoken angegeben',
+    pageNotFound: 'Diese Seite wurde nicht gefunden.',
+    backToDashboard: 'Zurück zum Dashboard',
+    // Cookie consent — was hardcoded English JSX, i.e. the first thing a
+    // German visitor saw on an otherwise fully German page (QA 2026-08-09).
+    cookieTitle: 'Wir verwenden Cookies',
+    cookieBody: 'Wir verwenden Cookies, um Ihr Nutzungserlebnis zu verbessern, den Website-Verkehr zu analysieren und die Sicherheit zu gewährleisten. Mit Klick auf „Alle akzeptieren" stimmen Sie der Verwendung zu. Sie können Ihre Einstellungen anpassen oder nicht notwendige Cookies ablehnen.',
+    cookieRejectAll: 'Alle ablehnen',
+    cookieCustomize: 'Anpassen',
+    cookieAcceptAll: 'Alle akzeptieren',
+    cookiePreferences: 'Cookie-Einstellungen',
+    cookieEssentialTitle: 'Notwendige Cookies',
+    cookieEssentialDesc: 'Für den Betrieb der Website erforderlich. Können nicht deaktiviert werden.',
+    cookieAnalyticsTitle: 'Analyse-Cookies',
+    cookieAnalyticsDesc: 'Helfen uns zu verstehen, wie Besucher unsere Website nutzen.',
+    cookieFunctionalTitle: 'Funktionale Cookies',
+    cookieFunctionalDesc: 'Ermöglichen personalisierte Funktionen und speichern Ihre Einstellungen.',
+    cookieSavePreferences: 'Einstellungen speichern',
+    cookiePrivacyPolicy: 'Datenschutzerklärung',
   },
 
   en: {
@@ -1102,6 +1120,22 @@ const translations = {
     emailVerified: 'Email Verified!',
     emailVerifiedSuccess: 'Your email has been successfully verified. You now have full access to all features.',
     noVerificationToken: 'No verification token provided',
+    pageNotFound: 'We could not find that page.',
+    backToDashboard: 'Back to dashboard',
+    cookieTitle: 'We use cookies',
+    cookieBody: 'We use cookies to improve your experience, analyze site traffic, and for security. By clicking "Accept All", you consent to our use of cookies. You can customize your preferences or reject non-essential cookies.',
+    cookieRejectAll: 'Reject All',
+    cookieCustomize: 'Customize',
+    cookieAcceptAll: 'Accept All',
+    cookiePreferences: 'Cookie Preferences',
+    cookieEssentialTitle: 'Essential Cookies',
+    cookieEssentialDesc: 'Required for the website to function. Cannot be disabled.',
+    cookieAnalyticsTitle: 'Analytics Cookies',
+    cookieAnalyticsDesc: 'Help us understand how visitors interact with our website.',
+    cookieFunctionalTitle: 'Functional Cookies',
+    cookieFunctionalDesc: 'Enable personalized features and remember your preferences.',
+    cookieSavePreferences: 'Save Preferences',
+    cookiePrivacyPolicy: 'Privacy Policy',
   }
 };
 
@@ -1117,19 +1151,32 @@ function detectLanguage() {
     return saved;
   }
 
-  // Detect from browser/OS
+  // Detect from browser/OS. Previously only ever confirmed German and fell
+  // through to the German default for every other language, including
+  // English — meaning an English browser could never actually be detected
+  // as English. Now actually branches on what the browser reports.
   const browserLang = navigator.language || navigator.userLanguage;
   if (browserLang) {
     const lang = browserLang.split('-')[0].toLowerCase();
     if (lang === 'de') return 'de';
+    if (lang === 'en') return 'en';
   }
 
-  // Default to German (since target market is German)
+  // Only reached when the browser reports neither de nor en (or reports
+  // nothing) — default to German since target market is German.
   return 'de';
 }
 
 export function LanguageProvider({ children }) {
   const [language, setLanguageState] = useState(() => detectLanguage());
+
+  // Keep <html lang> in sync with the language actually being rendered.
+  // It was hardcoded "en" in index.html, so German pages advertised
+  // themselves as English to screen readers, browser translation prompts
+  // and search engines (QA 2026-08-09).
+  useEffect(() => {
+    document.documentElement.lang = language;
+  }, [language]);
 
   const setLanguage = (lang) => {
     setLanguageState(lang);

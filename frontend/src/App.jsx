@@ -1,8 +1,8 @@
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, Link } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { PmProvider } from './context/PmContext';
 import { OnboardingProvider } from './context/OnboardingContext';
-import { LanguageProvider } from './context/LanguageContext';
+import { LanguageProvider, useLanguage } from './context/LanguageContext';
 import { Layout } from './components/Layout';
 import { Login } from './pages/Login';
 import { Signup } from './pages/Signup';
@@ -141,7 +141,43 @@ function AppRoutes() {
       <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
       <Route path="/settings/plan-addons" element={<ProtectedRoute><SettingsPlanAddons /></ProtectedRoute>} />
       <Route path="/admin" element={<AdminRoute><AdminDashboard /></AdminRoute>} />
+      {/*
+        Catch-all. Without this, any unmatched URL rendered a completely blank
+        white page — no text, no nav, no way back (QA 2026-08-09, Finding 5).
+        That hit real URLs a customer can plausibly land on: /dashboard (the
+        dashboard actually lives at "/"), plus stale bookmarks and old email
+        links. SaRoutes already had its own catch-all; the main table did not.
+
+        Logged out, an unknown path is almost always an expired session or an
+        old link, so send them to login rather than showing a 404 they can't
+        act on. Logged in, show a real 404 inside the app shell.
+      */}
+      <Route path="*" element={<NotFound />} />
     </Routes>
+  );
+}
+
+/**
+ * 404 handler. Redirects to login when unauthenticated so a stale link never
+ * dead-ends on a blank page.
+ */
+function NotFound() {
+  const { user, loading } = useAuth();
+  const { t } = useLanguage();
+
+  if (loading) return <div className="loading">Loading...</div>;
+  if (!user) return <Navigate to="/login" replace />;
+
+  return (
+    <Layout>
+      <div style={{ padding: '48px 24px', textAlign: 'center' }}>
+        <h1 style={{ fontSize: 48, margin: 0 }}>404</h1>
+        <p style={{ color: '#64748b', marginTop: 8 }}>{t('pageNotFound')}</p>
+        <Link to="/" style={{ display: 'inline-block', marginTop: 16 }}>
+          {t('backToDashboard')}
+        </Link>
+      </div>
+    </Layout>
   );
 }
 

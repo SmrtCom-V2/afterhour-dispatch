@@ -13,6 +13,7 @@ import { Router } from 'express';
 import { db } from '../db/index.js';
 import { logger } from '../utils/logger.js';
 import { authenticateToken } from '../middleware/auth.js';
+import { getFrontendUrl } from '../utils/frontendUrl.js';
 
 const router = Router();
 
@@ -184,7 +185,7 @@ router.post('/create-checkout', authenticateToken, checkStripeConfig, async (req
     }
 
     // Create checkout session
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5175';
+    const frontendUrl = getFrontendUrl();
     const session = await stripe.checkout.sessions.create({
       customer: stripeCustomerId,
       mode: 'subscription',
@@ -227,7 +228,7 @@ router.post('/create-portal', authenticateToken, checkStripeConfig, async (req, 
       return res.status(400).json({ error: 'No billing account found' });
     }
 
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5175';
+    const frontendUrl = getFrontendUrl();
     const session = await stripe.billingPortal.sessions.create({
       customer: subscription.rows[0].stripe_customer_id,
       return_url: `${frontendUrl}/settings`

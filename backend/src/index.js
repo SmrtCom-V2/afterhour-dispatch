@@ -66,6 +66,7 @@ import stripeWebhookRoutes from './routes/stripeWebhook.js';
 import gdprRoutes from './routes/gdpr.js';
 import deviceTokensRoutes from './routes/deviceTokens.js';
 import ownerVisitReportRoutes from './routes/ownerVisitReport.js';
+import { getFrontendUrl } from './utils/frontendUrl.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -206,7 +207,7 @@ app.use('/api', customerEntitlementsRoutes);
 // SP Report public page (redirect to frontend)
 app.get('/report/:token', (req, res) => {
   const { token } = req.params;
-  const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+  const frontendUrl = getFrontendUrl();
   res.redirect(`${frontendUrl}/report/${token}`);
 });
 

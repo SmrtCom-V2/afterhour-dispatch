@@ -37,9 +37,10 @@ router.post('/', async (req, res) => {
       phone,
       adminName,
       oncallPhone,
-      emailVerified,
       termsAccepted
     } = req.body;
+    // NOTE: req.body.emailVerified is deliberately NOT read. The client does
+    // not get a vote on its own verification status — see the lookup below.
 
     // Validation
     if (!companyName || !email || !password || !phone) {
@@ -71,6 +72,26 @@ router.post('/', async (req, res) => {
         error: 'Invalid email format'
       });
     }
+
+    // Whether the email is verified is decided by the server, never by the
+    // client. This route used to write `emailVerified === true` straight from
+    // the request body into fm_admin.email_verified, so a direct API call with
+    // {"emailVerified": true} produced a fully verified account for an address
+    // the caller does not control and was never sent anything — proven live
+    // 2026-08-09 (account created with email_verified = true and zero rows in
+    // signup_verification_codes). The signup UI's verification step was
+    // decorative: skippable by anyone not using the UI.
+    //
+    // Source of truth is a consumed code in signup_verification_codes for this
+    // exact address. Not finding one is not an error — the account is simply
+    // created unverified, which is the safe default.
+    const verifiedRow = await client.query(
+      `SELECT 1 FROM signup_verification_codes
+       WHERE LOWER(email) = LOWER($1) AND verified_at IS NOT NULL
+       LIMIT 1`,
+      [email]
+    );
+    const isEmailVerified = verifiedRow.rows.length > 0;
 
     await client.query('BEGIN');
 
@@ -169,7 +190,7 @@ router.post('/', async (req, res) => {
         passwordHash,
         adminName || email.split('@')[0],
         true, // First user is admin
-        emailVerified === true // Set email_verified if provided
+        isEmailVerified // Server-determined — see the lookup above
       ]
     );
 

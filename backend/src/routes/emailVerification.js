@@ -9,6 +9,7 @@ import { db } from '../db/index.js';
 import { logger } from '../utils/logger.js';
 import { sendEmail } from '../utils/email.js';
 import { authenticateToken } from '../middleware/auth.js';
+import { getFrontendUrl } from '../utils/frontendUrl.js';
 
 const router = Router();
 
@@ -84,7 +85,7 @@ router.post('/send', authenticateToken, async (req, res) => {
     );
 
     // Build verification URL
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5175';
+    const frontendUrl = getFrontendUrl();
     const verifyUrl = `${frontendUrl}/verify-email?token=${verificationToken}`;
 
     // Send email

@@ -9,6 +9,7 @@
 import { db } from '../db/index.js';
 import { logger } from '../utils/logger.js';
 import { sendEmail } from '../utils/email.js';
+import { getFrontendUrl } from '../utils/frontendUrl.js';
 
 // Lazy-load Stripe
 let stripe = null;
@@ -196,7 +197,7 @@ function getPriceIdForPlan(plan) {
 async function sendTrialExpiredNoCardEmail(company) {
   if (!company.owner_email) return;
 
-  const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5175';
+  const frontendUrl = getFrontendUrl();
 
   try {
     await sendEmail({
@@ -246,7 +247,7 @@ async function sendTrialExpiredNoCardEmail(company) {
 async function sendTrialConvertedEmail(company, plan) {
   if (!company.owner_email) return;
 
-  const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5175';
+  const frontendUrl = getFrontendUrl();
   const planNames = {
     starter: 'Starter',
     professional: 'Professional',
@@ -303,7 +304,7 @@ async function sendTrialConvertedEmail(company, plan) {
 async function sendPaymentFailedEmail(company, errorMessage) {
   if (!company.owner_email) return;
 
-  const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5175';
+  const frontendUrl = getFrontendUrl();
 
   try {
     await sendEmail({
@@ -391,7 +392,7 @@ export async function sendTrialReminders() {
 async function sendTrialReminderEmail(company, daysRemaining, hasCard) {
   if (!company.owner_email) return;
 
-  const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5175';
+  const frontendUrl = getFrontendUrl();
   const dayWord = daysRemaining === 1 ? 'day' : 'days';
 
   try {

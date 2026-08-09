@@ -9,6 +9,7 @@ import crypto from 'crypto';
 import { db } from '../db/index.js';
 import { logger } from '../utils/logger.js';
 import { sendEmail } from '../utils/email.js';
+import { getFrontendUrl } from '../utils/frontendUrl.js';
 
 const router = Router();
 
@@ -78,7 +79,7 @@ router.post('/request', async (req, res) => {
     );
 
     // Build reset URL
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5175';
+    const frontendUrl = getFrontendUrl();
     const resetUrl = `${frontendUrl}/reset-password?token=${resetToken}`;
 
     // Send email

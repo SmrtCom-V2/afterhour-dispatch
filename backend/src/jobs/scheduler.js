@@ -9,7 +9,7 @@
 import cron from 'node-cron';
 import { db } from '../db/index.js';
 import { logger } from '../utils/logger.js';
-import { generateMorningReport, getPmCompaniesForReports } from '../services/morningReport.js';
+import { generateMorningReport, getPmCompaniesForReports, getReportDate } from '../services/morningReport.js';
 import { getEmailProvider } from '../providers/email/index.js';
 import { getTelephonyProvider } from '../providers/telephony/index.js';
 import { config } from '../config/index.js';
@@ -94,6 +94,12 @@ async function sendMorningReports() {
 
     logger.info(`Sending morning reports to ${pmCompanies.length} PM companies`);
 
+    // The report covers yesterday's incidents and is stored under yesterday's
+    // report_date. Using today's date here (as this job used to) meant the
+    // UPDATE below matched zero rows and the subject line advertised the wrong
+    // day. Single source of truth lives in morningReport.js.
+    const reportDate = getReportDate();
+
     for (const pm of pmCompanies) {
       try {
         const pdfBuffer = await generateMorningReport(pm.id);
@@ -103,18 +109,25 @@ async function sendMorningReports() {
         await emailProvider.sendMorningReport(
           pm.contact_email,
           pm.name,
-          new Date().toISOString().split('T')[0],
+          reportDate,
           pdfBuffer
         );
 
-        // Update report record
-        await db.query(
+        // Update report record. Verify the stamp actually landed — a silent
+        // zero-row UPDATE is exactly how this went unnoticed before.
+        const stamped = await db.query(
           `UPDATE morning_report SET sent_at = NOW(), sent_to = $1
            WHERE pm_company_id = $2 AND report_date = $3`,
-          [pm.contact_email, pm.id, new Date().toISOString().split('T')[0]]
+          [pm.contact_email, pm.id, reportDate]
         );
 
-        logger.info('Morning report sent', { pmId: pm.id, email: pm.contact_email });
+        if (stamped.rowCount === 0) {
+          logger.error('Morning report sent but no row stamped — delivery is not recorded', {
+            pmId: pm.id, reportDate
+          });
+        } else {
+          logger.info('Morning report sent', { pmId: pm.id, email: pm.contact_email, reportDate });
+        }
       } catch (error) {
         logger.error('Failed to send morning report', { pmId: pm.id, error: error.message });
       }

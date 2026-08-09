@@ -7,15 +7,28 @@
  * var was never set at build time, the fallback silently absorbed it, and the
  * bundle looked fine until a real browser tried to use it.
  *
- * Missing config must fail loudly at build/startup, not degrade into a dev URL.
+ * Missing config must fail loudly — but it must fail *where it is used*, not at
+ * module load. The first version of this file validated at module scope and
+ * exported plain consts. Vite inlines `import.meta.env` at build time but does
+ * NOT evaluate this module during the build, so the throw never fired in CI —
+ * it fired in the customer's browser, during module evaluation, before React
+ * mounted. A missing VITE_SA_API_URL (SuperAdmin-only config) therefore took
+ * down the entire customer-facing app with a blank white page, on every route,
+ * while the server still returned HTTP 200 so uptime checks stayed green.
+ * (QA 2026-08-09 — observed live on afterhour.smrthour.com.)
+ *
+ * Two rules follow, and both matter:
+ *   1. Validate lazily, on first access. A broken SuperAdmin URL breaks /sa,
+ *      not /login.
+ *   2. Never let a bad value through silently. Accessing a misconfigured URL
+ *      still throws, and the surrounding UI is responsible for catching it.
+ *
  * For local development set VITE_API_URL / VITE_SA_API_URL in `.env` — the same
- * mechanism production uses, so dev and prod fail the same way.
+ * mechanism production uses.
  */
 
-function required(name) {
-  const value = import.meta.env[name];
-
-  if (!value || typeof value !== 'string' || value.trim() === '') {
+function validate(name, rawValue, segment) {
+  if (!rawValue || typeof rawValue !== 'string' || rawValue.trim() === '') {
     throw new Error(
       `[config] ${name} is not set. Define it in the build environment ` +
       `(Vercel project env vars for deploys, .env for local dev). ` +
@@ -23,7 +36,7 @@ function required(name) {
     );
   }
 
-  const trimmed = value.trim();
+  const trimmed = rawValue.trim();
 
   // A production build must never talk to a developer's machine. If this ever
   // fires in CI/Vercel it means a dev value leaked into the deploy environment.
@@ -41,22 +54,54 @@ function required(name) {
     );
   }
 
-  return trimmed.replace(/\/+$/, '');
-}
-
-/**
- * Ensure a base URL ends with the given path segment, without doubling it.
- *
- * The old hardcoded fallbacks baked the path in ('.../api', '.../sa'), so
- * whether the env var carried it was never tested. Removing the fallbacks
- * surfaced that VITE_SA_API_URL is set to a bare host — the SA client then
- * posted to /auth/login instead of /sa/auth/login and got a 404. Owning the
- * segment here makes both spellings of the env var work.
- */
-function withSegment(base, segment) {
-  const clean = base.replace(/\/+$/, '');
+  // Ensure the base URL ends with the given path segment, without doubling it.
+  // The old hardcoded fallbacks baked the path in ('.../api', '.../sa'), so
+  // whether the env var carried it was never tested. VITE_SA_API_URL is set to
+  // a bare host, so owning the segment here makes both spellings work.
+  const clean = trimmed.replace(/\/+$/, '');
   return clean.endsWith(`/${segment}`) ? clean : `${clean}/${segment}`;
 }
 
-export const API_URL = withSegment(required('VITE_API_URL'), 'api');
-export const SA_API_URL = withSegment(required('VITE_SA_API_URL'), 'sa');
+function lazyUrl(name, segment) {
+  let cached;
+  return () => {
+    if (cached === undefined) {
+      cached = validate(name, import.meta.env[name], segment);
+    }
+    return cached;
+  };
+}
+
+export const getApiUrl = lazyUrl('VITE_API_URL', 'api');
+export const getSaApiUrl = lazyUrl('VITE_SA_API_URL', 'sa');
+
+/**
+ * Non-throwing probe for surfacing a config problem in the UI instead of as an
+ * unhandled error. Returns null when the URL is usable.
+ */
+export function getConfigError(which) {
+  try {
+    which === 'sa' ? getSaApiUrl() : getApiUrl();
+    return null;
+  } catch (err) {
+    return err.message;
+  }
+}
+
+/**
+ * Back-compat string-like accessors.
+ *
+ * Existing call sites do `${API_URL}/foo`. These proxies resolve (and validate)
+ * only when interpolated, preserving the lazy behaviour above while leaving
+ * those call sites untouched.
+ */
+function urlProxy(resolve) {
+  return {
+    toString: resolve,
+    [Symbol.toPrimitive]: resolve,
+    valueOf: resolve,
+  };
+}
+
+export const API_URL = urlProxy(() => getApiUrl());
+export const SA_API_URL = urlProxy(() => getSaApiUrl());
