@@ -51,7 +51,17 @@ class EmailProvider {
       return { success: true, messageId: result.messageId };
     } catch (error) {
       logger.error('Email send failed', { error: error.message, to, subject });
-      return { success: false, error: error.message };
+      // Throw rather than returning { success: false }. Returning made every
+      // caller's try/catch dead code: a hard SMTP rejection (e.g. a 550 from
+      // the mail provider) flowed on to "mark as sent" DB writes and success
+      // logs, so undelivered morning reports were recorded as delivered
+      // (observed live 2026-08-09). Callers that must not abort on a failed
+      // email — e.g. dispatch.js, where SMS is the fallback — catch this
+      // explicitly at the call site.
+      const err = new Error(error.message);
+      err.cause = error;
+      err.emailDeliveryFailed = true;
+      throw err;
     }
   }
 

@@ -315,13 +315,24 @@ async function handleSpAccepted(incident, sp, attemptId) {
     const reportLink = `${process.env.APP_URL || 'http://localhost:3000'}/report/${token}`;
     const emailProvider = await getEmailProvider();
 
-    await emailProvider.sendSpReportLink(
-      sp.email || '', // Fallback to SMS if no email
-      sp.company_name,
-      `${incident.issue_category} at ${incident.building_address || 'Unknown location'}`,
-      reportLink,
-      deadline.toISOString()
-    );
+    // Email delivery now throws on failure (providers/email/index.js). This is
+    // a live emergency dispatch path: a bounced email must NOT prevent the SMS
+    // below, which is the real fallback channel. Log loudly and continue.
+    try {
+      await emailProvider.sendSpReportLink(
+        sp.email || '', // Fallback to SMS if no email
+        sp.company_name,
+        `${incident.issue_category} at ${incident.building_address || 'Unknown location'}`,
+        reportLink,
+        deadline.toISOString()
+      );
+    } catch (error) {
+      logger.error('SP report link email failed — continuing to SMS fallback', {
+        incidentId: incident.id,
+        spId: sp.id,
+        error: error.message,
+      });
+    }
 
     // Also send via SMS
     const telephony = getTelephonyProvider();

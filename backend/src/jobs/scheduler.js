@@ -98,6 +98,8 @@ async function sendMorningReports() {
       try {
         const pdfBuffer = await generateMorningReport(pm.id);
 
+        // Throws on delivery failure (see providers/email/index.js) — so a
+        // bounced report no longer falls through to the sent_at stamp below.
         await emailProvider.sendMorningReport(
           pm.contact_email,
           pm.name,
@@ -187,14 +189,22 @@ async function sendReportReminders() {
         minute: '2-digit',
       });
 
-      // Send email reminder
+      // Send email reminder. SMS below is the fallback channel, so a failed
+      // email must not skip it — log and continue (see providers/email).
       if (report.email) {
-        await emailProvider.sendSpReportReminder(
-          report.email,
-          report.company_name,
-          reportLink,
-          deadline
-        );
+        try {
+          await emailProvider.sendSpReportReminder(
+            report.email,
+            report.company_name,
+            reportLink,
+            deadline
+          );
+        } catch (error) {
+          logger.error('SP reminder email failed — continuing to SMS', {
+            reportId: report.id,
+            error: error.message,
+          });
+        }
       }
 
       // Send SMS reminder
