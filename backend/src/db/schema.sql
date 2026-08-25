@@ -17,6 +17,7 @@ CREATE TABLE fm_company (
     fm_oncall_phone VARCHAR(50) NOT NULL, -- SMS escalation target
     fm_oncall_name VARCHAR(255),
     status VARCHAR(20) DEFAULT 'trial' CHECK (status IN ('trial', 'active', 'past_due', 'suspended', 'cancelled')),
+    past_due_since TIMESTAMP WITH TIME ZONE,
     trial_start_at TIMESTAMP WITH TIME ZONE,
     trial_end_at TIMESTAMP WITH TIME ZONE,
     paid_start_at TIMESTAMP WITH TIME ZONE,

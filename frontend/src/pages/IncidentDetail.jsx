@@ -376,9 +376,19 @@ export function IncidentDetail() {
               <div style={{ marginTop: 16 }}>
                 <div className="text-xs text-muted mb-4">Guided Questions</div>
                 <div className="text-xs" style={{ background: 'var(--color-bg-hover)', borderRadius: 'var(--radius-md)', padding: 8, fontFamily: 'var(--font-mono)' }}>
-                  {Object.entries(incident.guided_answers).map(([q, a]) => (
-                    <div key={q}>{q}: {a}</div>
-                  ))}
+                  {Object.entries(incident.guided_answers).map(([q, a]) => {
+                    // Each answer is {value, status, turn} (voiceBrain.js's slot
+                    // shape), not a primitive — rendering `a` directly threw
+                    // React error #31 ("Objects are not valid as a React
+                    // child"), found live 2026-08-21 opening a real incident
+                    // for the first time since the goal-driven DIAGNOSE engine
+                    // started populating this shape.
+                    const value = a && typeof a === 'object' ? a.value : a;
+                    const display = value === null || value === undefined || value === ''
+                      ? (a && a.status === 'unknown' ? '(caller did not know)' : '-')
+                      : String(value);
+                    return <div key={q}>{q}: {display}</div>;
+                  })}
                 </div>
               </div>
             )}

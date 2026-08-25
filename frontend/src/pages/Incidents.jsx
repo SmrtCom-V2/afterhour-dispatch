@@ -104,6 +104,18 @@ export function Incidents() {
 
   const selectedPmName = selectedPm ? pmCompanies.find(p => p.id === selectedPm)?.name : null;
 
+  // Short plain-language snippet for the list row — issue_category alone
+  // ("water", "heating", "other") tells an operator almost nothing at a
+  // glance; issue_description is the AI's own written summary of the call
+  // and is already returned by the API, just wasn't shown here before.
+  const issueSnippet = (incident) => {
+    const category = incident.issue_category?.replace(/_/g, ' ') || 'Unknown';
+    if (!incident.issue_description) return category;
+    const firstSentence = incident.issue_description.split(/(?<=[.!?])\s/)[0];
+    const snippet = firstSentence.length > 90 ? `${firstSentence.slice(0, 90)}…` : firstSentence;
+    return snippet;
+  };
+
   return (
     <div>
       {/* Context Header */}
@@ -189,7 +201,7 @@ export function Incidents() {
                     <td style={{ fontFamily: 'monospace', fontSize: 13 }}>{formatDate(incident.created_at)}</td>
                     {!selectedPm && <td>{incident.pm_company_name || '-'}</td>}
                     <td>{incident.building_name || 'Unknown'}</td>
-                    <td>{incident.issue_category?.replace(/_/g, ' ') || 'Unknown'}</td>
+                    <td title={incident.issue_description || ''}>{issueSnippet(incident)}</td>
                     <td>
                       {incident.is_emergency ? (
                         <span style={{ color: '#C00000', fontWeight: 500 }}>{t('emergency')}</span>

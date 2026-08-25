@@ -6,6 +6,17 @@ import { WelcomeModal, GuidedTour } from './Onboarding';
 import { StatusBanners } from './StatusBanners';
 import { LanguageSwitcher } from './LanguageSwitcher';
 
+// Sprint 4: where each entitled product lives. This app has no shared
+// component/design-system package (plain CSS, not Tailwind — see SmrtCom
+// Core's ProductSwitcher in @smrtcom/ui for the equivalent there), so this
+// is a standalone, intentionally minimal version matching this app's own
+// conventions rather than importing a package built for a different stack.
+const PRODUCT_META = {
+  afterhour: { label: 'After Hour', color: '#10b981' },
+  smartcom: { label: 'SmrtCom', color: '#3b82f6', href: 'https://smrtcom.com' },
+  shield: { label: 'Shield', color: '#f59e0b', href: 'https://smrtcom.com' },
+};
+
 // Icons as simple SVG components
 const DashboardIcon = () => (
   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -84,7 +95,7 @@ const LogoutIcon = () => (
 );
 
 export function Layout({ children }) {
-  const { user, logout } = useAuth();
+  const { user, entitlements, logout } = useAuth();
   const { selectedPm, selectedPmId, clearPm, pmCompanies } = usePm();
   const { t } = useLanguage();
   const navigate = useNavigate();
@@ -315,6 +326,38 @@ export function Layout({ children }) {
 
         {/* Footer / User */}
         <div className="sidebar-footer">
+          {/* Sprint 4: cross-product nav — only renders once a company owns
+              more than one product, so single-product customers (the vast
+              majority today) see no change from before this existed. */}
+          {entitlements.length > 1 && (
+            <div className="sidebar-section" style={{ marginBottom: 16 }}>
+              <div className="sidebar-section-title">{t('yourProducts')}</div>
+              <ul className="sidebar-nav-list">
+                {entitlements.map((product) => {
+                  const isCurrent = product === 'afterhour';
+                  const meta = PRODUCT_META[product];
+                  if (!meta) return null;
+                  return (
+                    <li className="sidebar-nav-item" key={product}>
+                      {isCurrent ? (
+                        <span style={{ display: 'flex', alignItems: 'center', gap: 8, opacity: 0.6, cursor: 'default' }}>
+                          <span style={{ width: 8, height: 8, borderRadius: '50%', background: meta.color, flexShrink: 0 }} />
+                          {meta.label}
+                          <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--text-tertiary, #999)' }}>{t('current')}</span>
+                        </span>
+                      ) : (
+                        <a href={meta.href} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <span style={{ width: 8, height: 8, borderRadius: '50%', background: meta.color, flexShrink: 0 }} />
+                          {meta.label}
+                        </a>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
+
           {/* Language Switcher */}
           <div style={{ marginBottom: 16 }}>
             <LanguageSwitcher variant="compact" />

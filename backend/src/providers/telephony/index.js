@@ -107,10 +107,15 @@ class TwilioProvider {
     for (const action of actions) {
       switch (action.type) {
         case 'say':
+          // Upgraded 2026-08-20 (flagged earlier this session, fixed now
+          // while touching the on-call paging path): Polly.Vicki is Twilio's
+          // standard-tier voice, noticeably robotic on a real page call.
+          // Polly.Joanna-Neural is Twilio's neural-tier equivalent — same
+          // Twilio Say verb, no new integration, meaningfully more natural.
           response.say(
             {
               language: action.language === 'de' ? 'de-DE' : 'en-US',
-              voice: 'Polly.Vicki', // or Polly.Hans for German male
+              voice: action.language === 'de' ? 'Polly.Vicki-Neural' : 'Polly.Joanna-Neural',
             },
             action.text
           );
@@ -215,6 +220,25 @@ class MockTelephonyProvider {
   }
 }
 
+// Placeholder values shipped in .env.example — never treat these as real
+// credentials even if someone sets TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN
+// to them.
+const PLACEHOLDER_TWILIO_VALUES = new Set([
+  'your-twilio-account-sid',
+  'your-twilio-auth-token',
+]);
+
+function isRealCredential(value) {
+  return typeof value === 'string' &&
+    value.trim().length > 0 &&
+    !PLACEHOLDER_TWILIO_VALUES.has(value.trim());
+}
+
+function hasRealTwilioCredentials() {
+  return isRealCredential(config.telephony.twilio.accountSid) &&
+    isRealCredential(config.telephony.twilio.authToken);
+}
+
 // Factory function
 export function createTelephonyProvider() {
   const providerName = config.telephony.provider;
@@ -228,11 +252,26 @@ export function createTelephonyProvider() {
       );
 
     case 'mock':
-    default:
+    default: {
       if (config.nodeEnv === 'production' && providerName !== 'mock') {
         logger.warn(`Unknown telephony provider: ${providerName}, using mock`);
       }
+
+      // Incident 2026-07-28/29 (see POSTMORTEMS.md / ISSUES_FOUND_LIVE_TEST_2026-07-28.md):
+      // TELEPHONY_PROVIDER was literally 'mock' in production with real,
+      // funded Twilio credentials sitting right next to it. Dispatch calls
+      // to on-call staff/vendors during a real emergency silently did
+      // nothing, and this branch didn't even log a warning for that case.
+      // A warn-and-continue is not enough — it already proved insufficient
+      // once. Refuse to boot instead.
+      if (config.nodeEnv === 'production' && hasRealTwilioCredentials()) {
+        throw new Error(
+          'FATAL: TELEPHONY_PROVIDER resolved to mock in production while real Twilio credentials are configured — refusing to start. Set TELEPHONY_PROVIDER=twilio explicitly.'
+        );
+      }
+
       return new MockTelephonyProvider();
+    }
   }
 }
 

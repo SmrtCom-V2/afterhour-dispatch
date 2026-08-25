@@ -66,7 +66,8 @@ import stripeWebhookRoutes from './routes/stripeWebhook.js';
 import gdprRoutes from './routes/gdpr.js';
 import deviceTokensRoutes from './routes/deviceTokens.js';
 import ownerVisitReportRoutes from './routes/ownerVisitReport.js';
-import { getFrontendUrl } from './utils/frontendUrl.js';
+import internalNotifyRoutes from './routes/internalNotify.js';
+import internalIdentityRoutes from './routes/internalIdentity.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -173,6 +174,9 @@ app.use('/api/employees', authenticateToken, requireActiveSubscription, employee
 app.use('/api/oncall', authenticateToken, requireActiveSubscription, oncallRoutes);
 app.use('/api/sp-report', spReportRoutes);
 app.use('/api/webhooks', webhooksRoutes);
+// Internal service-to-service only — own auth (shared secret) inside the route file, not session/JWT.
+app.use('/api/internal', internalNotifyRoutes);
+app.use('/api/internal', internalIdentityRoutes);
 app.use('/api/cockpit', cockpitRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/register', registerRoutes);
@@ -207,7 +211,7 @@ app.use('/api', customerEntitlementsRoutes);
 // SP Report public page (redirect to frontend)
 app.get('/report/:token', (req, res) => {
   const { token } = req.params;
-  const frontendUrl = getFrontendUrl();
+  const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
   res.redirect(`${frontendUrl}/report/${token}`);
 });
 

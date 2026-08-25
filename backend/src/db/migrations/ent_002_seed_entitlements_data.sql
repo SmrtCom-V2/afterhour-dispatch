@@ -29,7 +29,7 @@ INSERT INTO features (id, name, description, category, is_base, is_addon, depend
     ('AO_ESCALATION_SUPPORT', 'Escalation Support', 'Automated multi-tier escalation workflows with notifications', 'addon', FALSE, TRUE, '["AO_SLA_TIMERS"]', 13),
     ('AO_AUTO_REPORT_DELIVERY', 'Auto Report Delivery', 'Automated report delivery via email with next-day handover scheduling', 'addon', FALSE, TRUE, '[]', 14),
     ('AO_EXTENDED_AUDIT_TRAIL', 'Extended Audit Trail', 'Full audit trail with extended retention, decision chain visibility, and export', 'addon', FALSE, TRUE, '[]', 15),
-    ('AO_CLIENT_READY_COMPLIANCE_REPORT', 'Client-Ready Compliance Reports', 'Export-ready compliance documentation for audits (ISO/SOC)', 'addon', FALSE, TRUE, '[]', 16),
+    ('AO_CLIENT_READY_COMPLIANCE_REPORT', 'Client-Ready Compliance Reports', 'Exportable, structured incident documentation formatted for internal reviews', 'addon', FALSE, TRUE, '[]', 16),
     ('AO_ANALYTICS_BACKLOG_TRENDS', 'Analytics & Backlog Trends', 'Advanced analytics dashboard with backlog analysis and trend reporting', 'addon', FALSE, TRUE, '[]', 17)
 ON CONFLICT (id) DO UPDATE SET
     name = EXCLUDED.name,
@@ -56,7 +56,7 @@ INSERT INTO packages (id, name, tagline, description, is_active, display_order, 
     ('PLAN_MICRO', 'Micro', 'Best for small portfolios needing basic after-hours protection', 'Human-verified alerts, Basic escalation (call or message), Basic incident summary', TRUE, 1, 19900, 0, '{"max_properties": 5, "max_incidents_month": 20}', 'Entry-level solution for small operators'),
     ('PLAN_STARTER', 'Starter', 'Managed after-hours response', 'Everything in Micro, plus: Structured incident reports, Priority escalation rules, Named escalation contacts', TRUE, 2, 34900, 0, '{"max_properties": 15, "max_incidents_month": 50}', 'Ideal for growing portfolios'),
     ('PLAN_PROFESSIONAL', 'Professional', 'Guaranteed after-hours outcomes', 'Everything in Starter, plus: SLA-backed response times, Multi-step escalation workflows, Incident categorization & severity, Monthly trend & insight reports', TRUE, 3, 64900, 75000, '{"max_properties": 50, "max_incidents_month": 150}', 'Ideal for risk-sensitive operators and multi-location businesses'),
-    ('PLAN_COMPLIANCE', 'Compliance', 'Audit-ready after-hours governance', 'Everything in Professional, plus: Tamper-proof incident logs, Audit-ready evidence packs, Compliance-aligned reporting', TRUE, 4, 99900, 150000, '{"max_properties": 150, "max_incidents_month": 300}', 'Ideal for compliance-bound organizations and insurers')
+    ('PLAN_COMPLIANCE', 'Compliance', 'Audit-ready after-hours governance', 'Everything in Professional, plus: Extended incident logging with long-term retention, Exportable incident reports for internal reviews, Structured reporting format', TRUE, 4, 99900, 150000, '{"max_properties": 150, "max_incidents_month": 300}', 'Ideal for compliance-bound organizations and insurers')
 ON CONFLICT (id) DO UPDATE SET
     name = EXCLUDED.name,
     tagline = EXCLUDED.tagline,

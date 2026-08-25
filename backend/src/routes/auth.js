@@ -11,6 +11,29 @@ import { logger } from '../utils/logger.js';
 
 const router = Router();
 
+// Sprint 3 retrofit: best-effort lookup against the shared identity-service
+// (SmrtCom-V2 monorepo, packages/identity-service). Never throws — an
+// identity-service outage or unset IDENTITY_SERVICE_URL must not block a
+// login that worked perfectly well before this service existed. Uses native
+// fetch (no new dependency) with a short timeout via AbortSignal.
+export async function fetchEntitlements(fmCompanyId) {
+  const identityServiceUrl = process.env.IDENTITY_SERVICE_URL;
+  if (!identityServiceUrl || !fmCompanyId) return [];
+
+  try {
+    const response = await fetch(
+      `${identityServiceUrl}/v1/entitlements/by-afterhour-company/${fmCompanyId}`,
+      { signal: AbortSignal.timeout(2000) },
+    );
+    if (!response.ok) return [];
+    const data = await response.json();
+    return data?.products ?? [];
+  } catch (error) {
+    logger.warn('Entitlements lookup failed', { fmCompanyId, error: error.message });
+    return [];
+  }
+}
+
 // POST /api/auth/login
 router.post('/login', async (req, res) => {
   try {
@@ -46,6 +69,8 @@ router.post('/login', async (req, res) => {
 
     logger.info('User logged in', { userId: user.id, email: user.email });
 
+    const entitlements = await fetchEntitlements(user.fm_company_id);
+
     res.json({
       token,
       user: {
@@ -57,6 +82,7 @@ router.post('/login', async (req, res) => {
         is_admin: user.is_admin,
         is_platform_admin: user.is_platform_admin,
       },
+      entitlements,
     });
   } catch (error) {
     logger.error('Login error', { error: error.message });
@@ -66,6 +92,11 @@ router.post('/login', async (req, res) => {
 
 // GET /api/auth/me - Get current user
 router.get('/me', authenticateToken, async (req, res) => {
+  // Sprint 4: without this, entitlements (and the cross-product nav they
+  // drive) would silently vanish on every page refresh — /login is not the
+  // only place a session starts from the frontend's point of view.
+  const entitlements = await fetchEntitlements(req.user.fm_company_id);
+
   res.json({
     user: {
       id: req.user.id,
@@ -76,6 +107,7 @@ router.get('/me', authenticateToken, async (req, res) => {
       is_admin: req.user.is_admin,
       is_platform_admin: req.user.is_platform_admin,
     },
+    entitlements,
   });
 });
 
