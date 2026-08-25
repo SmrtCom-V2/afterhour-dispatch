@@ -14,6 +14,7 @@ import { logger } from '../utils/logger.js';
 import { sendEmail } from '../utils/email.js';
 import { grantAfterHourEntitlement, revokeAfterHourEntitlement } from '../services/identityService.js';
 import { getFrontendUrl } from '../utils/frontendUrl.js';
+import { sendOpsAlert } from '../utils/opsAlert.js';
 
 const router = Router();
 
@@ -71,6 +72,10 @@ router.post('/', async (req, res) => {
 
       case 'invoice.payment_failed':
         await handleInvoicePaymentFailed(event.data.object);
+        break;
+
+      case 'charge.dispute.created':
+        await handleChargeDisputeCreated(event.data.object, stripe);
         break;
 
       default:
@@ -357,6 +362,76 @@ async function handleInvoicePaymentFailed(invoice) {
   }
 
   logger.warn('Invoice payment failed', { companyId: company_id, invoiceId: invoice.id });
+}
+
+/**
+ * Handle charge.dispute.created (chargeback)
+ *
+ * Disputes don't include a customer ID on the dispute object itself —
+ * only a charge ID — so the charge has to be fetched to find the
+ * Stripe customer and look up the company. Unlike the other handlers,
+ * this one calls sendOpsAlert: a chargeback is time-sensitive (Stripe
+ * gives a fixed window to submit evidence) and easy to miss if it only
+ * shows up in the Stripe dashboard.
+ */
+async function handleChargeDisputeCreated(dispute, stripe) {
+  let customerId = dispute.customer;
+
+  if (!customerId && dispute.charge) {
+    try {
+      const charge = await stripe.charges.retrieve(
+        typeof dispute.charge === 'string' ? dispute.charge : dispute.charge.id
+      );
+      customerId = charge.customer;
+    } catch (error) {
+      logger.error('Failed to retrieve charge for dispute', { disputeId: dispute.id, error: error.message });
+    }
+  }
+
+  if (!customerId) {
+    logger.error('Dispute created with no resolvable customer', { disputeId: dispute.id, chargeId: dispute.charge });
+    await sendOpsAlert('stripe_dispute_unresolved', `Stripe dispute ${dispute.id} created but no customer could be resolved — check Stripe dashboard directly.`);
+    return;
+  }
+
+  const result = await db.query(
+    `SELECT s.company_id, fc.owner_email, fc.name as company_name
+     FROM subscriptions s
+     JOIN fm_company fc ON s.company_id = fc.id
+     WHERE s.stripe_customer_id = $1`,
+    [customerId]
+  );
+
+  if (result.rows.length === 0) {
+    logger.error('Dispute created for unknown customer', { disputeId: dispute.id, customerId });
+    await sendOpsAlert('stripe_dispute_unresolved', `Stripe dispute ${dispute.id} created for customer ${customerId}, not found in our DB — check Stripe dashboard directly.`);
+    return;
+  }
+
+  const { company_id, owner_email, company_name } = result.rows[0];
+  const amount = ((dispute.amount || 0) / 100).toFixed(2);
+  const currency = (dispute.currency || '').toUpperCase();
+
+  await db.query(
+    `UPDATE fm_company
+     SET disputed_at = NOW(),
+         updated_at = NOW()
+     WHERE id = $1`,
+    [company_id]
+  );
+
+  await db.query(
+    `INSERT INTO company_events (company_id, type, actor_type, metadata)
+     VALUES ($1, 'charge_disputed', 'system', $2)`,
+    [company_id, JSON.stringify({ disputeId: dispute.id, reason: dispute.reason, amount: dispute.amount, currency: dispute.currency })]
+  );
+
+  logger.error('Charge dispute created', { companyId: company_id, disputeId: dispute.id, reason: dispute.reason, amount, currency });
+
+  await sendOpsAlert(
+    'stripe_dispute_created',
+    `Stripe dispute opened by ${company_name || company_id} (${owner_email || 'no email on file'}): ${amount} ${currency}, reason: ${dispute.reason}. Respond in the Stripe dashboard before the evidence deadline.`
+  );
 }
 
 export default router;

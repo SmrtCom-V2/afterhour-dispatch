@@ -25,6 +25,8 @@ import { Cockpit } from './pages/Cockpit';
 import { Impressum } from './pages/legal/Impressum';
 import { Datenschutz } from './pages/legal/Datenschutz';
 import { Terms } from './pages/legal/Terms';
+import { Refund } from './pages/legal/Refund';
+import { Erstattung } from './pages/legal/Erstattung';
 import { AdminDashboard } from './pages/AdminDashboard';
 import { SaAuthProvider, useSaAuth } from './sa/SaAuthContext';
 import { SaLayout } from './sa/SaLayout';
@@ -128,6 +130,8 @@ function AppRoutes() {
       <Route path="/impressum" element={<Impressum />} />
       <Route path="/privacy" element={<Datenschutz />} />
       <Route path="/terms" element={<Terms />} />
+      <Route path="/refund" element={<Refund />} />
+      <Route path="/erstattung" element={<Erstattung />} />
       <Route path="/" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
       <Route path="/incidents" element={<ProtectedRoute><Incidents /></ProtectedRoute>} />
       <Route path="/incidents/:id" element={<ProtectedRoute><IncidentDetail /></ProtectedRoute>} />

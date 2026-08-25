@@ -91,6 +91,7 @@ export function Terms() {
       <div className="legal-footer-links">
         <Link to="/impressum">Impressum</Link>
         <Link to="/privacy">Datenschutzerklärung</Link>
+        <Link to="/refund">Refund Policy</Link>
       </div>
     </div>
   );

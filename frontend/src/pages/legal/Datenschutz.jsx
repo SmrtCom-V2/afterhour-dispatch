@@ -96,6 +96,7 @@ export function Datenschutz() {
       <div className="legal-footer-links">
         <Link to="/impressum">Impressum</Link>
         <Link to="/terms">AGB / Terms of Service</Link>
+        <Link to="/erstattung">Erstattungsrichtlinie</Link>
       </div>
     </div>
   );
