@@ -43,6 +43,7 @@ export async function processExpiringTrials() {
       fc.name as company_name,
       fc.owner_email,
       fc.trial_end_at,
+      fc.language_preference,
       s.stripe_customer_id,
       s.status as subscription_status
     FROM fm_company fc
@@ -83,7 +84,7 @@ export async function processExpiringTrials() {
 
       // Get the selected plan from customer metadata or default to professional
       const selectedPlan = customer.metadata?.selectedPlan || 'professional';
-      const priceId = getPriceIdForPlan(selectedPlan);
+      const priceId = await getPriceIdForPlan(selectedPlan);
 
       if (!priceId) {
         logger.error('No price ID configured for plan', { plan: selectedPlan });
@@ -180,15 +181,22 @@ export async function processExpiringTrials() {
 }
 
 /**
- * Get Stripe Price ID for a plan
+ * Get Stripe Price ID for a plan, sourced from the same packages table
+ * that live checkout (/api/billing/plans) reads from — single source of truth.
  */
-function getPriceIdForPlan(plan) {
-  const priceMap = {
-    starter: process.env.STRIPE_PRICE_ID_STARTER,
-    professional: process.env.STRIPE_PRICE_ID_PROFESSIONAL || process.env.STRIPE_PRICE_ID_MONTHLY,
-    enterprise: process.env.STRIPE_PRICE_ID_ENTERPRISE
-  };
-  return priceMap[plan] || priceMap.professional;
+async function getPriceIdForPlan(plan) {
+  const planId = `PLAN_${String(plan || '').toUpperCase()}`;
+  const result = await db.query(
+    `SELECT stripe_price_id FROM packages WHERE id = $1 AND is_active = TRUE`,
+    [planId]
+  );
+  if (result.rows[0]?.stripe_price_id) {
+    return result.rows[0].stripe_price_id;
+  }
+  const fallback = await db.query(
+    `SELECT stripe_price_id FROM packages WHERE id = 'PLAN_PROFESSIONAL' AND is_active = TRUE`
+  );
+  return fallback.rows[0]?.stripe_price_id || null;
 }
 
 /**
@@ -198,25 +206,46 @@ async function sendTrialExpiredNoCardEmail(company) {
   if (!company.owner_email) return;
 
   const frontendUrl = getFrontendUrl();
+  const isEn = company.language_preference === 'en';
+
+  const copy = isEn
+    ? {
+        subject: 'Your SmrtHour Trial Has Ended',
+        heading: 'Trial Ended',
+        greeting: 'Hi,',
+        body: `Your 14-day free trial of <strong>SmrtHour</strong> for <strong>${company.company_name}</strong> has ended.`,
+        cta_lead: 'To continue using our service and keep all your data, please subscribe now.',
+        cta: 'Subscribe Now',
+        footer: 'Your data will be preserved for 30 days. After that, it may be deleted.'
+      }
+    : {
+        subject: 'Ihre SmrtHour-Testphase ist beendet',
+        heading: 'Testphase beendet',
+        greeting: 'Hallo,',
+        body: `Ihre 14-tägige kostenlose Testphase von <strong>SmrtHour</strong> für <strong>${company.company_name}</strong> ist beendet.`,
+        cta_lead: 'Um unseren Service weiter zu nutzen und Ihre Daten zu behalten, schließen Sie jetzt ein Abonnement ab.',
+        cta: 'Jetzt abonnieren',
+        footer: 'Ihre Daten bleiben 30 Tage lang gespeichert. Danach können sie gelöscht werden.'
+      };
 
   try {
     await sendEmail({
       to: company.owner_email,
-      subject: 'Your 24-7 Dispatch Trial Has Ended',
+      subject: copy.subject,
       html: `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
           <div style="background: linear-gradient(135deg, #F59E0B, #D97706); padding: 30px; text-align: center;">
-            <h1 style="color: white; margin: 0; font-size: 28px;">Trial Ended</h1>
+            <h1 style="color: white; margin: 0; font-size: 28px;">${copy.heading}</h1>
           </div>
           <div style="padding: 30px; background: #ffffff;">
             <p style="color: #475569; line-height: 1.6;">
-              Hi,
+              ${copy.greeting}
             </p>
             <p style="color: #475569; line-height: 1.6;">
-              Your 14-day free trial of <strong>24-7 Dispatch</strong> for <strong>${company.company_name}</strong> has ended.
+              ${copy.body}
             </p>
             <p style="color: #475569; line-height: 1.6;">
-              To continue using our service and keep all your data, please subscribe now.
+              ${copy.cta_lead}
             </p>
             <div style="text-align: center; margin: 30px 0;">
               <a href="${frontendUrl}/settings" style="
@@ -227,10 +256,10 @@ async function sendTrialExpiredNoCardEmail(company) {
                 text-decoration: none;
                 border-radius: 8px;
                 font-weight: 600;
-              ">Subscribe Now</a>
+              ">${copy.cta}</a>
             </div>
             <p style="color: #94A3B8; font-size: 13px; margin-top: 30px;">
-              Your data will be preserved for 30 days. After that, it may be deleted.
+              ${copy.footer}
             </p>
           </div>
         </div>
@@ -248,32 +277,53 @@ async function sendTrialConvertedEmail(company, plan) {
   if (!company.owner_email) return;
 
   const frontendUrl = getFrontendUrl();
+  const isEn = company.language_preference === 'en';
   const planNames = {
+    micro: 'Micro',
     starter: 'Starter',
     professional: 'Professional',
-    enterprise: 'Enterprise'
+    compliance: 'Compliance'
   };
+  const planName = planNames[plan] || 'Professional';
+
+  const copy = isEn
+    ? {
+        subject: 'Welcome to SmrtHour! Your subscription is now active',
+        heading: 'Welcome to SmrtHour!',
+        greeting: 'Hi,',
+        body: `Great news! Your <strong>${planName}</strong> subscription for <strong>${company.company_name}</strong> is now active.`,
+        invoice: 'Your first invoice has been charged to the card on file. You can view your invoices and manage your subscription in the Settings page.',
+        cta: 'Go to Dashboard',
+        thanks: 'Thank you for choosing SmrtHour!'
+      }
+    : {
+        subject: 'Willkommen bei SmrtHour! Ihr Abonnement ist jetzt aktiv',
+        heading: 'Willkommen bei SmrtHour!',
+        greeting: 'Hallo,',
+        body: `Gute Nachrichten! Ihr <strong>${planName}</strong>-Abonnement für <strong>${company.company_name}</strong> ist jetzt aktiv.`,
+        invoice: 'Ihre erste Rechnung wurde der hinterlegten Karte belastet. Sie können Ihre Rechnungen einsehen und Ihr Abonnement in den Einstellungen verwalten.',
+        cta: 'Zum Dashboard',
+        thanks: 'Vielen Dank, dass Sie sich für SmrtHour entschieden haben!'
+      };
 
   try {
     await sendEmail({
       to: company.owner_email,
-      subject: 'Welcome to 24-7 Dispatch! Your subscription is now active',
+      subject: copy.subject,
       html: `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
           <div style="background: linear-gradient(135deg, #10B981, #059669); padding: 30px; text-align: center;">
-            <h1 style="color: white; margin: 0; font-size: 28px;">Welcome to 24-7 Dispatch!</h1>
+            <h1 style="color: white; margin: 0; font-size: 28px;">${copy.heading}</h1>
           </div>
           <div style="padding: 30px; background: #ffffff;">
             <p style="color: #475569; line-height: 1.6;">
-              Hi,
+              ${copy.greeting}
             </p>
             <p style="color: #475569; line-height: 1.6;">
-              Great news! Your <strong>${planNames[plan] || 'Professional'}</strong> subscription for
-              <strong>${company.company_name}</strong> is now active.
+              ${copy.body}
             </p>
             <p style="color: #475569; line-height: 1.6;">
-              Your first invoice has been charged to the card on file. You can view your invoices
-              and manage your subscription in the Settings page.
+              ${copy.invoice}
             </p>
             <div style="text-align: center; margin: 30px 0;">
               <a href="${frontendUrl}/" style="
@@ -284,10 +334,10 @@ async function sendTrialConvertedEmail(company, plan) {
                 text-decoration: none;
                 border-radius: 8px;
                 font-weight: 600;
-              ">Go to Dashboard</a>
+              ">${copy.cta}</a>
             </div>
             <p style="color: #475569; line-height: 1.6;">
-              Thank you for choosing 24-7 Dispatch!
+              ${copy.thanks}
             </p>
           </div>
         </div>
@@ -360,6 +410,7 @@ export async function sendTrialReminders() {
       fc.name as company_name,
       fc.owner_email,
       fc.trial_end_at,
+      fc.language_preference,
       s.stripe_customer_id
     FROM fm_company fc
     LEFT JOIN subscriptions s ON fc.id = s.company_id
@@ -393,32 +444,56 @@ async function sendTrialReminderEmail(company, daysRemaining, hasCard) {
   if (!company.owner_email) return;
 
   const frontendUrl = getFrontendUrl();
-  const dayWord = daysRemaining === 1 ? 'day' : 'days';
+  const isEn = company.language_preference === 'en';
+
+  const copy = isEn
+    ? {
+        dayWord: daysRemaining === 1 ? 'day' : 'days',
+        subject: `${daysRemaining} ${daysRemaining === 1 ? 'day' : 'days'} left in your SmrtHour trial`,
+        greeting: 'Hi,',
+        body: (dayWord) => `Your free trial of <strong>SmrtHour</strong> for <strong>${company.company_name}</strong> ends in <strong>${daysRemaining} ${dayWord}</strong>.`,
+        hasCardNote: '✓ Your card is on file. Your subscription will start automatically when your trial ends.',
+        noCardNote: '⚠️ No payment method on file. Add a card to continue using SmrtHour after your trial.',
+        ctaHasCard: 'View Subscription',
+        ctaNoCard: 'Add Payment Method'
+      }
+    : {
+        dayWord: daysRemaining === 1 ? 'Tag' : 'Tage',
+        subject: `Noch ${daysRemaining} ${daysRemaining === 1 ? 'Tag' : 'Tage'} in Ihrer SmrtHour-Testphase`,
+        greeting: 'Hallo,',
+        body: (dayWord) => `Ihre kostenlose Testphase von <strong>SmrtHour</strong> für <strong>${company.company_name}</strong> endet in <strong>${daysRemaining} ${dayWord}</strong>.`,
+        hasCardNote: '✓ Ihre Karte ist hinterlegt. Ihr Abonnement startet automatisch, sobald die Testphase endet.',
+        noCardNote: '⚠️ Keine Zahlungsmethode hinterlegt. Fügen Sie eine Karte hinzu, um SmrtHour nach der Testphase weiter zu nutzen.',
+        ctaHasCard: 'Abonnement ansehen',
+        ctaNoCard: 'Zahlungsmethode hinzufügen'
+      };
+
+  const dayWordCap = copy.dayWord.charAt(0).toUpperCase() + copy.dayWord.slice(1);
+  const heading = isEn ? `${daysRemaining} ${dayWordCap} Left` : `Noch ${daysRemaining} ${dayWordCap}`;
 
   try {
     await sendEmail({
       to: company.owner_email,
-      subject: `${daysRemaining} ${dayWord} left in your 24-7 Dispatch trial`,
+      subject: copy.subject,
       html: `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
           <div style="background: linear-gradient(135deg, #3B82F6, #2563EB); padding: 30px; text-align: center;">
-            <h1 style="color: white; margin: 0; font-size: 28px;">${daysRemaining} ${dayWord.charAt(0).toUpperCase() + dayWord.slice(1)} Left</h1>
+            <h1 style="color: white; margin: 0; font-size: 28px;">${heading}</h1>
           </div>
           <div style="padding: 30px; background: #ffffff;">
             <p style="color: #475569; line-height: 1.6;">
-              Hi,
+              ${copy.greeting}
             </p>
             <p style="color: #475569; line-height: 1.6;">
-              Your free trial of <strong>24-7 Dispatch</strong> for <strong>${company.company_name}</strong>
-              ends in <strong>${daysRemaining} ${dayWord}</strong>.
+              ${copy.body(copy.dayWord)}
             </p>
             ${hasCard ? `
               <p style="color: #475569; line-height: 1.6; background: #F0FDF4; padding: 12px; border-radius: 6px; border-left: 4px solid #10B981;">
-                ✓ Your card is on file. Your subscription will start automatically when your trial ends.
+                ${copy.hasCardNote}
               </p>
             ` : `
               <p style="color: #475569; line-height: 1.6; background: #FEF3C7; padding: 12px; border-radius: 6px; border-left: 4px solid #F59E0B;">
-                ⚠️ No payment method on file. Add a card to continue using 24-7 Dispatch after your trial.
+                ${copy.noCardNote}
               </p>
             `}
             <div style="text-align: center; margin: 30px 0;">
@@ -430,7 +505,7 @@ async function sendTrialReminderEmail(company, daysRemaining, hasCard) {
                 text-decoration: none;
                 border-radius: 8px;
                 font-weight: 600;
-              ">${hasCard ? 'View Subscription' : 'Add Payment Method'}</a>
+              ">${hasCard ? copy.ctaHasCard : copy.ctaNoCard}</a>
             </div>
           </div>
         </div>

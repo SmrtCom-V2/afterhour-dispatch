@@ -63,7 +63,7 @@ export function Signup() {
   const [resendTimer, setResendTimer] = useState(0);
   const navigate = useNavigate();
   const { setUser } = useAuth();
-  const { t } = useLanguage();
+  const { t, language } = useLanguage();
   const codeInputRefs = useRef([]);
 
   // Form data
@@ -316,7 +316,8 @@ export function Signup() {
           adminName: formData.adminName || undefined,
           oncallPhone: formData.oncallPhone || undefined,
           emailVerified: true, // Email already verified in step 2
-          termsAccepted: formData.termsAccepted
+          termsAccepted: formData.termsAccepted,
+          language
         })
       });
 

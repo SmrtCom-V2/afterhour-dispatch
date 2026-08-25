@@ -37,7 +37,8 @@ router.post('/', async (req, res) => {
       phone,
       adminName,
       oncallPhone,
-      termsAccepted
+      termsAccepted,
+      language
     } = req.body;
     // NOTE: req.body.emailVerified is deliberately NOT read. The client does
     // not get a vote on its own verification status — see the lookup below.
@@ -151,8 +152,9 @@ router.post('/', async (req, res) => {
         trial_end_at,
         owner_email,
         seats_limit,
-        seats_used
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        seats_used,
+        language_preference
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
       RETURNING id, name, status, trial_start_at, trial_end_at`,
       [
         companyName,
@@ -164,7 +166,8 @@ router.post('/', async (req, res) => {
         trialEnd,
         email.toLowerCase(),
         5, // Default seat limit for trial
-        1  // Starting with 1 user (the admin)
+        1,  // Starting with 1 user (the admin)
+        language === 'en' ? 'en' : 'de' // default German unless the signup UI explicitly sent 'en'
       ]
     );
 
@@ -389,7 +392,8 @@ router.post('/with-card', async (req, res) => {
       oncallPhone,
       stripeCustomerId,
       paymentMethodId,
-      selectedPlan
+      selectedPlan,
+      language
     } = req.body;
 
     // Validation
@@ -457,8 +461,9 @@ router.post('/with-card', async (req, res) => {
         trial_end_at,
         owner_email,
         seats_limit,
-        seats_used
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        seats_used,
+        language_preference
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
       RETURNING id, name, status, trial_start_at, trial_end_at`,
       [
         companyName,
@@ -470,7 +475,8 @@ router.post('/with-card', async (req, res) => {
         trialEnd,
         email.toLowerCase(),
         5,
-        1
+        1,
+        language === 'en' ? 'en' : 'de'
       ]
     );
 
