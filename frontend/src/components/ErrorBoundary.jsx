@@ -1,4 +1,5 @@
 import { Component } from 'react';
+import { Sentry, sentryEnabled } from '../sentry.js';
 
 // Without this, any single render error anywhere in the tree (e.g. a
 // malformed field in one incident's data) white-screens the entire
@@ -16,6 +17,9 @@ export class ErrorBoundary extends Component {
 
   componentDidCatch(error, info) {
     console.error('Unhandled render error caught by ErrorBoundary:', error, info);
+    if (sentryEnabled) {
+      Sentry.captureException(error, { extra: { componentStack: info.componentStack } });
+    }
   }
 
   render() {

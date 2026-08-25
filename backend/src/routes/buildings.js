@@ -8,6 +8,13 @@ import { db } from '../db/index.js';
 import { authenticateToken } from '../middleware/auth.js';
 import { logger } from '../utils/logger.js';
 import { encryptAccessCode, decryptAccessCode } from '../utils/accessCodeCrypto.js';
+import { validate } from '../middleware/validate.js';
+import {
+  createBuildingSchema,
+  updateBuildingSchema,
+  bulkImportBuildingsSchema,
+  assignSpToBuildingSchema,
+} from '../validators/buildings.js';
 
 // Blocker #4 (2026-08-08 audit): decrypts the 3 access-code columns on a row
 // object in place, mutating and returning it — used everywhere a building
@@ -118,7 +125,7 @@ router.get('/:id', async (req, res) => {
 });
 
 // POST /api/buildings - Create building
-router.post('/', async (req, res) => {
+router.post('/', validate(createBuildingSchema), async (req, res) => {
   try {
     const {
       pmCompanyId,
@@ -239,7 +246,7 @@ router.post('/', async (req, res) => {
 });
 
 // POST /api/buildings/bulk - Bulk import buildings (CSV/Excel upload flow)
-router.post('/bulk', async (req, res) => {
+router.post('/bulk', validate(bulkImportBuildingsSchema), async (req, res) => {
   try {
     const { pmCompanyId, buildings } = req.body;
 
@@ -301,7 +308,7 @@ router.post('/bulk', async (req, res) => {
 });
 
 // PUT /api/buildings/:id - Update building
-router.put('/:id', async (req, res) => {
+router.put('/:id', validate(updateBuildingSchema), async (req, res) => {
   try {
     const { id } = req.params;
     const {
@@ -446,7 +453,7 @@ router.delete('/:id', async (req, res) => {
 });
 
 // POST /api/buildings/:id/service-providers - Assign SP to building
-router.post('/:id/service-providers', async (req, res) => {
+router.post('/:id/service-providers', validate(assignSpToBuildingSchema), async (req, res) => {
   try {
     const { id } = req.params;
     const { serviceProviderId, priority } = req.body;

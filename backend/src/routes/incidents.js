@@ -11,6 +11,8 @@ import { determineRequiredTrade } from '../services/tradeMapping.js';
 import { GuidedQuestions } from '../providers/voiceai/index.js';
 import { decryptBuildingCodes } from './buildings.js';
 import { decryptPiiFields } from '../utils/piiCrypto.js';
+import { validate } from '../middleware/validate.js';
+import { closeIncidentSchema, translateIncidentSchema } from '../validators/incidents.js';
 
 /**
  * Labels raw guided_answers ({problem: "...", danger_type: "..."}) with the
@@ -396,7 +398,7 @@ router.get('/:id/mobile-detail', async (req, res) => {
 });
 
 // PUT /api/incidents/:id/close - Close incident manually
-router.put('/:id/close', async (req, res) => {
+router.put('/:id/close', validate(closeIncidentSchema), async (req, res) => {
   try {
     const { id } = req.params;
     const { reason } = req.body;
@@ -442,7 +444,7 @@ router.put('/:id/close', async (req, res) => {
 // original re-labeled as a translation) and must never block the page: the
 // frontend already has the original text and shows it regardless of whether
 // this call succeeds.
-router.post('/:id/translate', async (req, res) => {
+router.post('/:id/translate', validate(translateIncidentSchema), async (req, res) => {
   try {
     const { id } = req.params;
     const { targetLanguage } = req.body;

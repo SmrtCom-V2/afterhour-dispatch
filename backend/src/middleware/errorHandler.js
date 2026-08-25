@@ -3,6 +3,7 @@
  */
 
 import { logger } from '../utils/logger.js';
+import { captureError } from '../utils/sentry.js';
 
 export function errorHandler(err, req, res, next) {
   logger.error('Unhandled error', {
@@ -12,6 +13,8 @@ export function errorHandler(err, req, res, next) {
     method: req.method,
     requestId: req.id,
   });
+
+  captureError(err, req);
 
   // Don't leak error details in production
   const isDev = process.env.NODE_ENV === 'development';

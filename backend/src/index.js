@@ -10,6 +10,9 @@
 // handlers); this is the one-line fix that covers all of them at once
 // instead of hand-adding try/catch to every handler.
 import 'express-async-errors';
+import { initSentry } from './utils/sentry.js';
+initSentry();
+
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -86,8 +89,21 @@ app.set('trust proxy', 1);
 app.use(requestId);
 
 // Security middleware
+// This API serves JSON plus static /uploads files — no HTML pages of its own,
+// so CSP mainly needs to lock down the uploads response. Disabled only in
+// non-production so local dev tooling (Vite proxying, etc.) is unaffected.
 app.use(helmet({
-  contentSecurityPolicy: false, // Disable for development
+  contentSecurityPolicy: config.nodeEnv === 'production' ? {
+    directives: {
+      defaultSrc: ["'none'"],
+      imgSrc: ["'self'"],
+      frameAncestors: ["'none'"],
+    },
+  } : false,
+  hsts: config.nodeEnv === 'production' ? {
+    maxAge: 31536000,
+    includeSubDomains: true,
+  } : false,
 }));
 
 // CORS

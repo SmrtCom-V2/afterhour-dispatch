@@ -8,6 +8,12 @@ import { db } from '../db/index.js';
 import { authenticateToken } from '../middleware/auth.js';
 import { logger } from '../utils/logger.js';
 import { encryptPhone, decryptPhone, hashPhone } from '../utils/piiCrypto.js';
+import { validate } from '../middleware/validate.js';
+import {
+  createTenantSchema,
+  updateTenantSchema,
+  bulkImportTenantsSchema,
+} from '../validators/tenants.js';
 
 const router = Router();
 
@@ -80,7 +86,7 @@ router.get('/:id', async (req, res) => {
 });
 
 // POST /api/tenants - Create tenant
-router.post('/', async (req, res) => {
+router.post('/', validate(createTenantSchema), async (req, res) => {
   try {
     const { buildingId, name, phone, unit, status } = req.body;
 
@@ -117,7 +123,7 @@ router.post('/', async (req, res) => {
 });
 
 // PUT /api/tenants/:id - Update tenant
-router.put('/:id', async (req, res) => {
+router.put('/:id', validate(updateTenantSchema), async (req, res) => {
   try {
     const { id } = req.params;
     const { name, phone, unit, status } = req.body;
@@ -190,7 +196,7 @@ router.delete('/:id', async (req, res) => {
 });
 
 // POST /api/tenants/bulk - Bulk import tenants
-router.post('/bulk', async (req, res) => {
+router.post('/bulk', validate(bulkImportTenantsSchema), async (req, res) => {
   try {
     const { buildingId, tenants } = req.body;
 

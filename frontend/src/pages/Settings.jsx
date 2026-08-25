@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import { api } from '../utils/api';
 import { useAuth } from '../context/AuthContext';
 import { useLanguage } from '../context/LanguageContext';
@@ -1187,6 +1188,16 @@ export function Settings() {
                       </div>
                     ))}
                   </div>
+
+                  <p style={{ fontSize: 12, color: 'var(--color-text-secondary)', marginTop: 16 }}>
+                    {language === 'de' ? (
+                      <>Mit dem Abschluss eines Abonnements akzeptieren Sie unsere{' '}
+                        <Link to="/erstattung">Erstattungsrichtlinie</Link>.</>
+                    ) : (
+                      <>By subscribing, you agree to our{' '}
+                        <Link to="/refund">Refund Policy</Link>.</>
+                    )}
+                  </p>
                 </>
               )}
 
