@@ -15,6 +15,7 @@
 
 import { notifyHuman } from '../services/notificationChannel.js';
 import { logger } from '../utils/logger.js';
+import { Sentry, sentryEnabled } from './sentry.js';
 
 const COOLDOWN_MS = 30 * 60 * 1000; // one alert per key per 30 min
 const lastSentAt = new Map();
@@ -23,6 +24,13 @@ export async function sendOpsAlert(key, message) {
   const opsPhone = process.env.OPS_ALERT_PHONE;
 
   logger.error(`OPS ALERT [${key}]: ${message}`);
+
+  if (sentryEnabled) {
+    Sentry.withScope((scope) => {
+      scope.setTag('opsAlertKey', key);
+      Sentry.captureMessage(`Ops alert: ${message}`, 'error');
+    });
+  }
 
   if (!opsPhone) {
     logger.warn('OPS_ALERT_PHONE not configured — alert only logged, not sent');
