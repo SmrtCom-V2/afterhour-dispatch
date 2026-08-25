@@ -14,6 +14,8 @@ import { db } from '../db/index.js';
 import { logger } from '../utils/logger.js';
 import { authenticateToken } from '../middleware/auth.js';
 import { getFrontendUrl } from '../utils/frontendUrl.js';
+import { validate } from '../middleware/validate.js';
+import { createCheckoutSchema } from '../validators/billing.js';
 
 const router = Router();
 
@@ -145,7 +147,7 @@ router.get('/status', authenticateToken, async (req, res) => {
  * POST /api/billing/create-checkout
  * Create Stripe checkout session
  */
-router.post('/create-checkout', authenticateToken, checkStripeConfig, async (req, res) => {
+router.post('/create-checkout', authenticateToken, checkStripeConfig, validate(createCheckoutSchema), async (req, res) => {
   try {
     await ensureTables();
     const stripe = await getStripe();
