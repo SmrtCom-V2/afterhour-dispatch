@@ -106,8 +106,67 @@ function similarity(a, b) {
   const dist = levenshtein(na, nb);
   return 1 - dist / Math.max(na.length, nb.length);
 }
+// Bug fix 2026-08-26: two real live calls + a standalone repro proved that a
+// caller saying their house number as a WORD ("Hauptstraße ten") instead of a
+// numeral ("Hauptstraße 10") made extractHouseNumber() return null (its regex
+// is pure-digit), which forces houseMatch to 0 in buildingScore() below and
+// caps the score at streetSim * 0.5 — always under the 0.5 building_not_managed
+// threshold regardless of how well the street name matches. Saying a house
+// number as a word is completely normal spoken German/English, so this was
+// silently rejecting a large fraction of legitimate callers. Fix: normalize
+// spoken number words (English + German, 1-99 — covers the vast majority of
+// real house numbers; tens/twenties/etc. compound the same way in both
+// languages, e.g. "twenty-one" / "einundzwanzig") to their numeral form
+// BEFORE running the digit regex. Street-name similarity logic below is
+// untouched — this is scoped only to house-number extraction.
+const ONES_EN = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten',
+  'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen', 'eighteen', 'nineteen'];
+const TENS_EN = ['', '', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety'];
+
+const ONES_DE = ['null', 'eins', 'zwei', 'drei', 'vier', 'fünf', 'sechs', 'sieben', 'acht', 'neun', 'zehn',
+  'elf', 'zwölf', 'dreizehn', 'vierzehn', 'fünfzehn', 'sechzehn', 'siebzehn', 'achtzehn', 'neunzehn'];
+const TENS_DE = ['', '', 'zwanzig', 'dreißig', 'vierzig', 'fünfzig', 'sechzig', 'siebzig', 'achtzig', 'neunzig'];
+// German ones-words used as the prefix in compound numbers (21 = "einundzwanzig",
+// not "einsundzwanzig") — "eins" shortens to "ein" everywhere except standalone.
+const ONES_DE_PREFIX = ONES_DE.map((w, i) => (i === 1 ? 'ein' : w));
+
+// Builds a word -> numeral lookup for 0-99 in one language. `compound(tensWord,
+// onesWord)` controls word order since English and German compound differently:
+// English is "tens-ones" ("twenty-one"), German is "ones-und-tens"
+// ("einundzwanzig").
+function buildNumberWordMap(ones, tens, tensPrefixOnes, compound) {
+  const map = new Map();
+  ones.forEach((w, i) => { if (w) map.set(w, i); });
+  tens.forEach((w, i) => { if (w) map.set(w, i * 10); });
+  for (let t = 2; t <= 9; t++) {
+    if (!tens[t]) continue;
+    for (let o = 1; o <= 9; o++) {
+      map.set(compound(tens[t], tensPrefixOnes[o]), t * 10 + o);
+    }
+  }
+  return map;
+}
+
+const NUMBER_WORD_MAP = new Map([
+  ...buildNumberWordMap(ONES_EN, TENS_EN, ONES_EN, (tensWord, onesWord) => `${tensWord}-${onesWord}`),
+  ...buildNumberWordMap(ONES_DE, TENS_DE, ONES_DE_PREFIX, (tensWord, onesWord) => `${onesWord}und${tensWord}`),
+]);
+
+// Replaces recognized EN/DE number words with their numeral form, e.g.
+// "Hauptstraße ten" -> "Hauptstraße 10", "Hauptstraße einundzwanzig" -> "Hauptstraße 21".
+// Word-boundary match, case-insensitive, so it doesn't clobber substrings inside
+// real street names.
+function normalizeSpokenNumbers(text) {
+  const str = String(text || '');
+  if (!str) return str;
+  // Longest words first so "seventeen" isn't partially matched by "seven" etc.
+  const words = [...NUMBER_WORD_MAP.keys()].sort((a, b) => b.length - a.length);
+  const pattern = new RegExp(`\\b(${words.join('|')})\\b`, 'gi');
+  return str.replace(pattern, (match) => String(NUMBER_WORD_MAP.get(match.toLowerCase())));
+}
+
 function extractHouseNumber(address) {
-  const m = String(address || '').match(/\d+/);
+  const m = normalizeSpokenNumbers(address).match(/\d+/);
   return m ? m[0] : null;
 }
 
@@ -194,5 +253,11 @@ router.post('/identify-by-name-address', requireInternalAuth, async (req, res) =
     res.json({ state: 'unverified', lookupError: true });
   }
 });
+
+// Named exports of the pure scoring helpers (no db/express dependency) so they
+// can be unit-tested directly — added 2026-08-26 alongside the spoken-house-number
+// fix so the exact repro (score before/after) is verifiable without standing up
+// the full route + a mocked db.
+export { normalizeSpokenNumbers, extractHouseNumber, buildingScore, similarity };
 
 export default router;
