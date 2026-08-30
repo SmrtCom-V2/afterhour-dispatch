@@ -7,7 +7,61 @@ const URGENCY_LABEL = {
   critical: { text: 'NOTFALL', color: '#ef4444' },
   urgent: { text: 'DRINGEND', color: '#f97316' },
   unclear: { text: 'AI UNSICHER — DEINE EINSCHÄTZUNG', color: '#a855f7' },
+  low: { text: 'NICHT DRINGEND', color: '#22c55e' },
 };
+
+// incident.aiUrgency is written only by the legacy web-system callFlow.js
+// path (`critical`/`unclear`, never `urgent`) and is always NULL for
+// incidents created by the live voice-brain-direct-twilio-poc path, which
+// only ever writes `decision`/`ai_confidence` (see realTools.js
+// tierToDecision() — the real T0-T3 tier itself isn't persisted). Deriving
+// from `decision` instead means every incident gets a real badge instead of
+// silently defaulting to "DRINGEND" whenever aiUrgency is unset.
+function urgencyKeyFor(incident) {
+  if (incident.aiUrgency) return incident.aiUrgency;
+  if (incident.decision === 'emergency_dispatch') return 'critical';
+  if (incident.decision === 'unclear_escalated' || incident.decision === 'verification_failed') return 'unclear';
+  if (incident.decision === 'not_emergency') return 'low';
+  return 'unclear';
+}
+
+// Override-reason capture (spec 2.3) — the cockpit already recorded WHAT a
+// human decided, never WHY it differed from the AI. A human agreeing with
+// the AI's own suggested action has nothing to explain, so the reason picker
+// only appears when the chosen action actually disagrees with what the AI's
+// urgency/decision implied — 'critical' AI urgency implies send_company,
+// 'low' implies defer_morning, 'unclear' has no single implied action so no
+// disagreement can be detected against it either way.
+const AI_IMPLIED_ACTION = { critical: 'send_company', low: 'defer_morning' };
+function isOverrideOfAiSuggestion(incident, chosenAction) {
+  const implied = AI_IMPLIED_ACTION[urgencyKeyFor(incident)];
+  return Boolean(implied) && implied !== chosenAction;
+}
+
+const SUGGESTED_ACTION_LABEL = {
+  send_company: { text: 'Empfehlung: Dienstleister jetzt schicken', icon: '🚒' },
+  defer_morning: { text: 'Empfehlung: kann bis morgen warten', icon: '🌙' },
+};
+
+// Relative time ("vor 4 Minuten") reads faster under stress at 3am than a
+// clock time, which needs the reader to also know/compute the current time.
+// Cockpit UX review, 2026-08-30.
+function relativeTimeDe(isoString) {
+  const diffMs = Date.now() - new Date(isoString).getTime();
+  const mins = Math.round(diffMs / 60000);
+  if (mins < 1) return 'gerade eben';
+  if (mins < 60) return `vor ${mins} Minute${mins === 1 ? '' : 'n'}`;
+  const hours = Math.round(mins / 60);
+  return `vor ${hours} Stunde${hours === 1 ? '' : 'n'}`;
+}
+
+const OVERRIDE_REASON_OPTIONS = [
+  { value: 'ai_missed_a_fact', label: 'AI hat eine Tatsache übersehen' },
+  { value: 'ai_misjudged_severity', label: 'AI hat die Dringlichkeit falsch eingeschätzt' },
+  { value: 'caller_gave_more_info_after_call', label: 'Anrufer gab nach dem Anruf mehr Infos' },
+  { value: 'tier_right_tone_off', label: 'Einstufung war richtig, Tonfall daneben' },
+  { value: 'other', label: 'Sonstiges' },
+];
 
 /**
  * Decision Cockpit — Night Ops HITL, NIGHT_OPS_MASTER_PLAN.md §4.3.
@@ -24,6 +78,7 @@ export function Cockpit() {
   const [showAllCompanies, setShowAllCompanies] = useState(false);
   const [chosenSpId, setChosenSpId] = useState(null);
   const [outcomeNote, setOutcomeNote] = useState('');
+  const [overrideReason, setOverrideReason] = useState('');
 
   const load = useCallback(async () => {
     try {
@@ -56,7 +111,7 @@ export function Cockpit() {
       const res = await fetch(`${API_URL}/cockpit/${token}/decision`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action, chosenSpId }),
+        body: JSON.stringify({ action, chosenSpId, overrideReason: overrideReason || undefined }),
       });
       const json = await res.json();
       if (res.status === 409) {
@@ -92,21 +147,41 @@ export function Cockpit() {
   if (error) return <Shell><Centered><p style={s.errorText}>{error}</p></Centered></Shell>;
   if (!data) return null;
 
-  const { incident, caller, building, history, suggestedCompany, allCompanies, wakeupAttempts, alreadyDecided } = data;
-  const urgency = URGENCY_LABEL[incident.aiUrgency] || URGENCY_LABEL.urgent;
+  const { incident, caller, building, history, suggestedAction, suggestedCompany, allCompanies, wakeupAttempts, alreadyDecided } = data;
+  const urgencyKey = urgencyKeyFor(incident);
+  const urgency = URGENCY_LABEL[urgencyKey] || URGENCY_LABEL.unclear;
+  const actionLabel = SUGGESTED_ACTION_LABEL[suggestedAction];
+  // Low-confidence/unclear calls are exactly the case where the human needs
+  // the raw transcript fastest — don't make them click to open it. Cockpit
+  // UX review, 2026-08-30.
+  const isLowConfidence = urgencyKey === 'unclear' || (incident.aiConfidence ?? 100) < 50;
 
   return (
     <Shell>
       <div style={{ ...s.badge, background: urgency.color }}>{urgency.text}</div>
+      {urgencyKey === 'unclear' && (
+        <p style={s.unclearHint}>
+          Die AI konnte die Dringlichkeit nicht sicher einschätzen — bitte Gesprächsverlauf unten lesen und selbst entscheiden.
+        </p>
+      )}
+      {actionLabel && (
+        <div style={s.actionBanner}>
+          <span style={s.actionIcon}>{actionLabel.icon}</span>
+          <span>{actionLabel.text}</span>
+        </div>
+      )}
 
       {/* A. What happened */}
       <Section title="Was ist passiert">
         <Row label="Kategorie" value={incident.category?.replace(/_/g, ' ') || '—'} />
         <Row label="AI-Einschätzung" value={`${incident.aiConfidence ?? '?'}% sicher`} />
-        <Row label="Zeit" value={new Date(incident.createdAt).toLocaleTimeString('de-DE')} />
+        {incident.classificationReason && (
+          <p style={s.reasonText}>{incident.classificationReason}</p>
+        )}
+        <Row label="Zeit" value={relativeTimeDe(incident.createdAt)} />
         <p style={s.description}>{incident.description}</p>
         {incident.transcript && (
-          <details style={s.details}>
+          <details style={s.details} open={isLowConfidence}>
             <summary>Gesprächsverlauf</summary>
             <p style={s.transcript}>{incident.transcript}</p>
           </details>
@@ -202,6 +277,19 @@ export function Cockpit() {
         <DecisionBanner incident={incident} actionResult={actionResult} onSubmitOutcome={submitOutcome} note={outcomeNote} setNote={setOutcomeNote} busy={busy} />
       ) : (
         <Section title="Entscheidung">
+          {AI_IMPLIED_ACTION[urgencyKeyFor(incident)] && (
+            <div style={s.overrideReasonBox}>
+              <p style={s.sectionSubtitle}>
+                Weicht deine Entscheidung von der AI-Einschätzung ab? Grund optional angeben (hilft, die AI zu verbessern):
+              </p>
+              <select style={s.select} value={overrideReason} onChange={(e) => setOverrideReason(e.target.value)}>
+                <option value="">— kein Grund angegeben —</option>
+                {OVERRIDE_REASON_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+            </div>
+          )}
           <button disabled={busy} style={{ ...s.decisionButton, background: '#16a34a' }} onClick={() => decide('send_company')}>
             🚒 Dienstleister schicken
           </button>
@@ -307,6 +395,29 @@ const s = {
     marginBottom: '16px',
     color: '#fff',
   },
+  actionBanner: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '10px',
+    background: '#1e293b',
+    border: '1px solid #334155',
+    borderRadius: '8px',
+    padding: '12px 14px',
+    marginBottom: '16px',
+    fontSize: '15px',
+    fontWeight: 600,
+  },
+  actionIcon: { fontSize: '20px' },
+  unclearHint: {
+    fontSize: '14px',
+    color: '#e9d5ff',
+    background: '#3b0764',
+    border: '1px solid #6b21a8',
+    borderRadius: '8px',
+    padding: '10px 12px',
+    marginBottom: '12px',
+  },
+  reasonText: { fontSize: '13px', color: '#94a3b8', margin: '2px 0 6px', fontStyle: 'italic' },
   section: {
     background: '#1e293b',
     borderRadius: '12px',
@@ -365,6 +476,16 @@ const s = {
     borderRadius: '10px',
     marginBottom: '10px',
     cursor: 'pointer',
+  },
+  overrideReasonBox: { marginBottom: '14px' },
+  select: {
+    width: '100%',
+    background: '#0f172a',
+    color: '#f1f5f9',
+    border: '1px solid #334155',
+    borderRadius: '8px',
+    padding: '10px',
+    fontSize: '14px',
   },
   textarea: {
     width: '100%',

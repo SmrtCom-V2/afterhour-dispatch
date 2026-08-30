@@ -63,8 +63,9 @@ router.get('/:token', async (req, res) => {
 
     const incidentResult = await db.query(
       `SELECT i.id, i.issue_category, i.issue_description, i.ai_confidence, i.ai_urgency,
+              i.classification_reason,
               i.tenant_name_given, i.tenant_phone_given, i.created_at, i.guided_answers,
-              i.decision, i.night_outcome, i.decided_by_person,
+              i.decision, i.night_outcome, i.decided_by_person, i.override_reason,
               b.id as building_id, b.name as building_name, b.address as building_address,
               b.water_shutoff_location, b.gas_shutoff_location, b.electric_shutoff_location,
               b.key_safe_location, b.key_safe_code, b.gate_code, b.main_entrance_code,
@@ -109,6 +110,19 @@ router.get('/:token', async (req, res) => {
 
     const suggested = spList.rows.find((sp) => sp.trade === requiredTrade) || spList.rows[0] || null;
 
+    // Explicit suggested-action label (gap found in the 2026-08-30 cockpit
+    // UX review — the badge color implied an action but never said it in
+    // words, forcing a half-asleep human to infer "red = send someone" for
+    // themselves). Same derivation the frontend used to do ad hoc for
+    // AI_IMPLIED_ACTION, now computed once, server-side, from the real
+    // decision/ai_urgency fields so frontend and backend can't drift apart.
+    const suggestedAction =
+      incident.decision === 'emergency_dispatch' || incident.ai_urgency === 'critical'
+        ? 'send_company'
+        : incident.decision === 'not_emergency' || incident.ai_urgency === 'low'
+        ? 'defer_morning'
+        : null; // unclear/urgent: no single suggested action, human must read and decide
+
     // Other wake-up attempts so far, for "already handled by X" display.
     const wakeups = await db.query(
       `SELECT stage, channel, result, created_at FROM wakeup_attempt WHERE incident_id = $1 ORDER BY created_at`,
@@ -139,10 +153,12 @@ router.get('/:token', async (req, res) => {
         description: incident.issue_description,
         aiConfidence: incident.ai_confidence,
         aiUrgency: incident.ai_urgency,
+        classificationReason: incident.classification_reason,
         createdAt: incident.created_at,
         decision: incident.decision,
         nightOutcome: incident.night_outcome,
         decidedByPerson: incident.decided_by_person,
+        overrideReason: incident.override_reason,
         transcript: incident.transcript,
         guidedAnswers: labelGuidedAnswers(incident.guided_answers, incident.language),
       },
@@ -167,6 +183,7 @@ router.get('/:token', async (req, res) => {
       },
       history: history.rows,
       requiredTrade,
+      suggestedAction,
       suggestedCompany: suggested,
       allCompanies: spList.rows,
       wakeupAttempts: wakeups.rows,
@@ -191,9 +208,13 @@ router.post('/:token/decision', async (req, res) => {
     if (error === 'not_found') return res.status(404).json({ error: 'not_found' });
     if (error === 'expired') return res.status(410).json({ error: 'expired' });
 
-    const { action, chosenSpId, deferReason } = req.body;
+    const { action, chosenSpId, deferReason, overrideReason } = req.body;
     if (!['send_company', 'owner_on_site', 'defer_morning'].includes(action)) {
       return res.status(400).json({ error: 'invalid_action' });
+    }
+    const VALID_OVERRIDE_REASONS = ['ai_missed_a_fact', 'ai_misjudged_severity', 'caller_gave_more_info_after_call', 'tier_right_tone_off', 'other'];
+    if (overrideReason !== undefined && overrideReason !== null && !VALID_OVERRIDE_REASONS.includes(overrideReason)) {
+      return res.status(400).json({ error: 'invalid_override_reason' });
     }
 
     const incidentResult = await db.query('SELECT building_id, issue_category, decision FROM incident WHERE id = $1', [
@@ -223,8 +244,8 @@ router.post('/:token/decision', async (req, res) => {
     const updateResult = await db.query(
       `UPDATE incident
        SET decision = $1, decision_at = NOW(), decided_by_person = $2, decided_via = 'cockpit',
-           suggested_sp_id = $3, chosen_sp_id = $4, night_outcome = $5
-       WHERE id = $6 AND decision = 'pending'
+           suggested_sp_id = $3, chosen_sp_id = $4, night_outcome = $5, override_reason = $6
+       WHERE id = $7 AND decision = 'pending'
        RETURNING id`,
       [
         action === 'send_company' ? 'emergency_dispatch' : 'not_emergency',
@@ -232,6 +253,7 @@ router.post('/:token/decision', async (req, res) => {
         suggestedSpId,
         action === 'send_company' ? chosenSpId || suggestedSpId : null,
         nightOutcome,
+        overrideReason || null,
         tokenRow.incident_id,
       ],
     );
@@ -258,7 +280,7 @@ router.post('/:token/decision', async (req, res) => {
        VALUES ($1, 'cockpit.decision', $2)`,
       [
         tokenRow.incident_id,
-        JSON.stringify({ action, decidedBy: tokenRow.person_name || tokenRow.phone, role: tokenRow.role, chosenSpId }),
+        JSON.stringify({ action, decidedBy: tokenRow.person_name || tokenRow.phone, role: tokenRow.role, chosenSpId, overrideReason: overrideReason || null }),
       ],
     );
 
