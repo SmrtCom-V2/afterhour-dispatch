@@ -171,20 +171,89 @@ export function Cockpit() {
         </div>
       )}
 
-      {/* A. What happened */}
+      {/* A. What happened — AI brief (falls back to raw fields for old incidents) */}
       <Section title="Was ist passiert">
-        <Row label="Kategorie" value={incident.category?.replace(/_/g, ' ') || '—'} />
-        <Row label="AI-Einschätzung" value={`${incident.aiConfidence ?? '?'}% sicher`} />
-        {incident.classificationReason && (
-          <p style={s.reasonText}>{incident.classificationReason}</p>
-        )}
-        <Row label="Zeit" value={relativeTimeDe(incident.createdAt)} />
-        <p style={s.description}>{incident.description}</p>
-        {incident.transcript && (
-          <details style={s.details} open={isLowConfidence}>
-            <summary>Gesprächsverlauf</summary>
-            <p style={s.transcript}>{incident.transcript}</p>
-          </details>
+        {incident.aiBrief ? (
+          <>
+            <p style={s.briefHeadline}>{incident.aiBrief.headline}</p>
+
+            {incident.aiBrief.emergency_assessment && (
+              <div style={
+                incident.aiBrief.emergency_assessment.is_emergency === 'unsure' ? s.assessUnsure
+                : incident.aiBrief.emergency_assessment.is_emergency === 'yes' ? s.assessYes
+                : s.assessNo
+              }>
+                <strong>
+                  {incident.aiBrief.emergency_assessment.is_emergency === 'unsure' ? 'AI ist unsicher'
+                    : incident.aiBrief.emergency_assessment.is_emergency === 'yes' ? 'AI: Notfall'
+                    : 'AI: kein Notfall'}
+                </strong>
+                {incident.aiBrief.emergency_assessment.one_liner && (
+                  <span> — {incident.aiBrief.emergency_assessment.one_liner}</span>
+                )}
+                {incident.aiBrief.emergency_assessment.reasoning && (
+                  <p style={s.reasonText}>{incident.aiBrief.emergency_assessment.reasoning}</p>
+                )}
+                <p style={s.confNote}>
+                  AI-Sicherheit bei Kategorie/Fakten: {incident.aiBrief.emergency_assessment.confidence_percent ?? incident.aiConfidence ?? '?'}%
+                </p>
+              </div>
+            )}
+
+            {incident.aiBrief.reported && (
+              <>
+                <p style={s.sectionSubtitle}>Gemeldet</p>
+                <p style={s.description}>{incident.aiBrief.reported}</p>
+              </>
+            )}
+
+            {incident.aiBrief.story_summary && (
+              <>
+                <p style={s.sectionSubtitle}>Zusammenfassung des Anrufs</p>
+                <p style={s.description}>{incident.aiBrief.story_summary}</p>
+              </>
+            )}
+
+            {Array.isArray(incident.aiBrief.qa) && incident.aiBrief.qa.length > 0 && (
+              <>
+                <p style={s.sectionSubtitle}>Gefragt &amp; geantwortet</p>
+                <div style={s.qaList}>
+                  {incident.aiBrief.qa.map((item, i) => (
+                    <div key={i} style={s.qaItem}>
+                      <span style={s.qaQ}>{item.q}</span>
+                      <span style={s.qaA}>{item.a}</span>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+
+            <Row label="Kategorie" value={incident.category?.replace(/_/g, ' ') || '—'} />
+            <Row label="Zeit" value={relativeTimeDe(incident.createdAt)} />
+
+            {incident.transcript && (
+              <details style={s.details} open={isLowConfidence}>
+                <summary>Vollständiger Gesprächsverlauf</summary>
+                <p style={s.transcript}>{incident.transcript}</p>
+              </details>
+            )}
+          </>
+        ) : (
+          <>
+            <Row label="Kategorie" value={incident.category?.replace(/_/g, ' ') || '—'} />
+            <Row label="AI-Einschätzung" value={`${incident.aiConfidence ?? '?'}% sicher`} />
+            {incident.classificationReason && (
+              <p style={s.reasonText}>{incident.classificationReason}</p>
+            )}
+            <Row label="Zeit" value={relativeTimeDe(incident.createdAt)} />
+            <p style={s.description}>{incident.description}</p>
+            {incident.transcript && (
+              <details style={s.details} open={isLowConfidence}>
+                <summary>Gesprächsverlauf</summary>
+                <p style={s.transcript}>{incident.transcript}</p>
+              </details>
+            )}
+          </>
         )}
       </Section>
 
@@ -418,6 +487,15 @@ const s = {
     marginBottom: '12px',
   },
   reasonText: { fontSize: '13px', color: '#94a3b8', margin: '2px 0 6px', fontStyle: 'italic' },
+  briefHeadline: { fontSize: '18px', fontWeight: 700, lineHeight: 1.3, margin: '0 0 12px' },
+  assessUnsure: { background: '#3b0764', border: '1px solid #7e22ce', borderRadius: '8px', padding: '10px 12px', margin: '0 0 14px', fontSize: '14px', color: '#f3e8ff' },
+  assessYes: { background: '#450a0a', border: '1px solid #b91c1c', borderRadius: '8px', padding: '10px 12px', margin: '0 0 14px', fontSize: '14px', color: '#fee2e2' },
+  assessNo: { background: '#052e16', border: '1px solid #15803d', borderRadius: '8px', padding: '10px 12px', margin: '0 0 14px', fontSize: '14px', color: '#dcfce7' },
+  confNote: { fontSize: '12px', color: '#94a3b8', margin: '6px 0 0' },
+  qaList: { display: 'flex', flexDirection: 'column', gap: '6px', margin: '4px 0 8px' },
+  qaItem: { display: 'flex', flexDirection: 'column', background: '#0f172a', borderRadius: '6px', padding: '8px 10px' },
+  qaQ: { fontSize: '13px', color: '#94a3b8' },
+  qaA: { fontSize: '15px', fontWeight: 600, marginTop: '2px' },
   section: {
     background: '#1e293b',
     borderRadius: '12px',

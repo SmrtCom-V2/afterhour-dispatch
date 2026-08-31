@@ -129,6 +129,19 @@ router.get('/:token', async (req, res) => {
       [incident.id],
     );
 
+    // The AI's post-call brief (headline, what was reported, the Q&A, the
+    // emergency read incl. "unsure", suggested actions). Written by the voice
+    // brain's generateIncidentSummary() to incident_timeline right after the
+    // ticket. This is the scannable version — the raw guided_answers below
+    // stay as a fallback for older incidents that predate it.
+    const briefRow = await db.query(
+      `SELECT event_data FROM incident_timeline
+       WHERE incident_id = $1 AND event_type = 'ai_incident_summary'
+       ORDER BY created_at DESC LIMIT 1`,
+      [incident.id],
+    );
+    const aiBrief = briefRow.rows[0]?.event_data || null;
+
     // Security: cockpit links can be forwarded (single-use-per-decision and
     // 12h expiry don't stop a *view*, only a second decision). Sensitive
     // building access codes have no verification gate here by design — the
@@ -161,6 +174,7 @@ router.get('/:token', async (req, res) => {
         overrideReason: incident.override_reason,
         transcript: incident.transcript,
         guidedAnswers: labelGuidedAnswers(incident.guided_answers, incident.language),
+        aiBrief,
       },
       caller: {
         name: incident.tenant_name || incident.tenant_name_given,
