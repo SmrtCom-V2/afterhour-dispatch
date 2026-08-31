@@ -18,7 +18,7 @@
 import { Router } from 'express';
 import { db } from '../db/index.js';
 import { logger } from '../utils/logger.js';
-import { hashPhone } from '../utils/piiCrypto.js';
+import { hashPhone, encryptPhone } from '../utils/piiCrypto.js';
 
 const router = Router();
 
@@ -87,7 +87,19 @@ router.post('/identify-by-phone', requireInternalAuth, async (req, res) => {
 // itself is simplified; revisit with a real German phonetic library if match
 // quality on live calls proves this insufficient.
 function normalizeName(s) {
-  return String(s || '').toLowerCase().trim().replace(/\b(herr|frau|mr|mrs|ms|dr)\b\.?/g, '').trim();
+  return String(s || '')
+    .toLowerCase()
+    .trim()
+    // Strip a spoken lead-in phrase ("my name is X", "ich heiße X", "this is
+    // X", "I'm X") so a clean name given conversationally still scores against
+    // the bare record name (2026-08-31 — "my name is thomas bauer" vs "thomas
+    // bauer" was scoring 0.5, under the 0.55 verify threshold). Belt-and-
+    // braces: the voice brain now also passes the extracted name, this
+    // catches anything that slips through.
+    .replace(/^(?:my name('s| is)?|i am|i'm|this is|it'?s|mein name ist|ich hei(ß|ss)e|ich bin|hier ist|hier spricht)\s+/i, '')
+    .replace(/\b(herr|frau|mr|mrs|ms|dr)\b\.?/g, '')
+    .replace(/[.,!?]+$/, '')
+    .trim();
 }
 function levenshtein(a, b) {
   const m = a.length, n = b.length;
@@ -251,6 +263,92 @@ router.post('/identify-by-name-address', requireInternalAuth, async (req, res) =
     // but this can't assert building_not_managed on an error, since we
     // genuinely don't know; unverified is the safe default here.
     res.json({ state: 'unverified', lookupError: true });
+  }
+});
+
+// POST /api/internal/bind-phone — remember a first-time caller's number so
+// their NEXT call takes the recognized path (2026-08-31, Ron's request:
+// "after his name and address were verified once, the next time he calls he
+// won't have to go through the whole verification again").
+//
+// Called by the voice POC ONLY on a high-confidence name+address match
+// (identify-by-name-address returned state:'verified', score >= 0.80). Never
+// on verified_partial / unverified — a weak match must not bind a phone
+// number to the wrong tenant record.
+//
+// Deliberately narrow: only fills an EMPTY phone_hash. It never overwrites a
+// number already on the tenant record (the company's own onboarding data is
+// authoritative — if the caller ID doesn't match what the company entered,
+// that's a data question for a human, not something to auto-correct), and it
+// only touches phone_hash / phone, not secondary_phone (identify-by-phone
+// only matches against phone_hash, so writing anywhere else would be a
+// no-op for recognition anyway).
+//
+// Safety rules, in order:
+//  - tenant must exist, be active, and belong to this fmCompanyId
+//  - tenant's phone_hash already == this        -> no-op (already remembered)
+//  - this number-hash already recognizes a DIFFERENT active tenant in the
+//    company                                     -> refuse (wrong bind > no bind)
+//  - tenant already has ANY phone_hash on file   -> leave it, do nothing
+//  - tenant has no phone_hash                     -> set phone + phone_hash
+// Body: { fmCompanyId, tenantId, fromNumber }
+router.post('/bind-phone', requireInternalAuth, async (req, res) => {
+  const { fmCompanyId, tenantId, fromNumber } = req.body || {};
+  if (!fmCompanyId || !tenantId || !fromNumber) {
+    return res.status(400).json({ error: 'fmCompanyId, tenantId and fromNumber are required' });
+  }
+
+  try {
+    const hash = hashPhone(fromNumber);
+
+    const tRes = await db.query(
+      `SELECT t.id, t.phone_hash
+         FROM tenant t
+         JOIN building b ON b.id = t.building_id
+         JOIN pm_company pm ON pm.id = b.pm_company_id
+        WHERE t.id = $1 AND pm.fm_company_id = $2 AND t.status = 'active'`,
+      [tenantId, fmCompanyId],
+    );
+    if (tRes.rows.length !== 1) {
+      logger.warn('bind-phone: tenant not found / not in company / inactive', { tenantId, fmCompanyId });
+      return res.json({ bound: false, reason: 'tenant_not_eligible' });
+    }
+    const tenant = tRes.rows[0];
+
+    if (tenant.phone_hash === hash) {
+      return res.json({ bound: false, reason: 'already_bound' });
+    }
+
+    // Collision: this number already recognizes a different active tenant in
+    // the company. Binding again would make the next call ambiguous
+    // (semi_recognized) at best, or greet the wrong person at worst.
+    const collision = await db.query(
+      `SELECT t.id FROM tenant t
+         JOIN building b ON b.id = t.building_id
+         JOIN pm_company pm ON pm.id = b.pm_company_id
+        WHERE pm.fm_company_id = $1 AND t.phone_hash = $2 AND t.status = 'active' AND t.id <> $3`,
+      [fmCompanyId, hash, tenantId],
+    );
+    if (collision.rows.length > 0) {
+      logger.warn('bind-phone: number already bound to another tenant, refusing', { tenantId, fmCompanyId });
+      return res.json({ bound: false, reason: 'number_belongs_to_another_tenant' });
+    }
+
+    if (tenant.phone_hash) {
+      // A different number is already on file — company data wins, leave it.
+      return res.json({ bound: false, reason: 'tenant_already_has_a_number' });
+    }
+
+    await db.query(
+      'UPDATE tenant SET phone = $1, phone_hash = $2, updated_at = NOW() WHERE id = $3',
+      [encryptPhone(fromNumber), hash, tenantId],
+    );
+    logger.info('bind-phone: number remembered for tenant', { tenantId, fmCompanyId });
+    return res.json({ bound: true, reason: 'primary_set' });
+  } catch (error) {
+    logger.error('bind-phone failed', { error: error.message, tenantId, fmCompanyId });
+    // Never surface as an error to the caller flow — this is a nice-to-have.
+    res.json({ bound: false, reason: 'error' });
   }
 });
 

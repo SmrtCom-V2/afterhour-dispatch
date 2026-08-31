@@ -86,3 +86,32 @@ describe('buildingScore — the exact confirmed-live-bug repro', () => {
     expect(score).toBeGreaterThanOrEqual(0.5);
   });
 });
+
+// ---------------------------------------------------------------------------
+// normalizeName lead-in stripping (2026-08-31). A caller who gives a clean
+// name conversationally ("my name is Thomas Bauer") used to score 0.5 against
+// the bare record name "Thomas Bauer" — under the 0.55 verify threshold — so
+// a perfect name failed to verify and the caller's number never got bound.
+// Tested via similarity() since normalizeName itself isn't exported.
+// ---------------------------------------------------------------------------
+import { similarity } from '../routes/internalIdentity.js';
+
+describe('normalizeName — spoken lead-in phrases', () => {
+  it('"my name is X" now scores a full match against the bare record name', () => {
+    expect(similarity('My name is Thomas Bauer.', 'Thomas Bauer')).toBeGreaterThanOrEqual(0.8);
+  });
+  it('German "ich heiße X" / "mein Name ist X" also strip cleanly', () => {
+    expect(similarity('ich heiße Thomas Bauer', 'Thomas Bauer')).toBeGreaterThanOrEqual(0.8);
+    expect(similarity('Mein Name ist Anna Weber', 'Anna Weber')).toBeGreaterThanOrEqual(0.8);
+  });
+  it('"this is X" / "I\'m X" strip cleanly', () => {
+    expect(similarity('This is Julia Klein', 'Julia Klein')).toBeGreaterThanOrEqual(0.8);
+    expect(similarity("I'm Max Mustermann", 'Max Mustermann')).toBeGreaterThanOrEqual(0.8);
+  });
+  it('a non-name utterance still fails to match a real name (no false positive)', () => {
+    expect(similarity('My address is Hauptstrasse ten', 'Thomas Bauer')).toBeLessThan(0.55);
+  });
+  it('a plain bare name is unaffected', () => {
+    expect(similarity('Thomas Bauer', 'Thomas Bauer')).toBe(1);
+  });
+});
