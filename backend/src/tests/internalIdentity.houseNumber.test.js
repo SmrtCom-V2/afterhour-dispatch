@@ -51,6 +51,12 @@ describe('extractHouseNumber — spoken word support', () => {
   it('still returns null when there truly is no number', () => {
     expect(extractHouseNumber('Hauptstraße')).toBeNull();
   });
+
+  it('handles the "ten" -> "Teen"/"zen" STT mishearing (2026-08-31)', () => {
+    expect(extractHouseNumber('Hauptstraße teen')).toBe('10');
+    expect(extractHouseNumber('Hauptstraße zen')).toBe('10');
+    expect(extractHouseNumber('Hauptstraße ten')).toBe('10'); // unchanged
+  });
 });
 
 describe('buildingScore — the exact confirmed-live-bug repro', () => {

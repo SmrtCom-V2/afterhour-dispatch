@@ -162,6 +162,9 @@ function buildNumberWordMap(ones, tens, tensPrefixOnes, compound) {
 const NUMBER_WORD_MAP = new Map([
   ...buildNumberWordMap(ONES_EN, TENS_EN, ONES_EN, (tensWord, onesWord) => `${tensWord}-${onesWord}`),
   ...buildNumberWordMap(ONES_DE, TENS_DE, ONES_DE_PREFIX, (tensWord, onesWord) => `${onesWord}und${tensWord}`),
+  // STT mishearing aliases (2026-08-31): Deepgram nova-3 renders a spoken
+  // "ten" as "Teen" / "zen" often enough to strand a real house number.
+  ['teen', 10], ['zen', 10],
 ]);
 
 // Replaces recognized EN/DE number words with their numeral form, e.g.
