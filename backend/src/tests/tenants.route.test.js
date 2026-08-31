@@ -180,4 +180,47 @@ describe('tenants routes', () => {
     const res = await request(app).get('/api/tenants');
     expect(res.status).toBe(401);
   });
+
+  test('POST /api/tenants persists a salutation, normalizing "Herr" -> "Mister"', async () => {
+    let insertParams = null;
+    db.query = jest.fn((text, params) => {
+      if (text.includes('FROM fm_admin fa')) return mockAuthLookup(FM_A_USER)(text);
+      if (text.includes('SELECT b.id FROM building b')) return Promise.resolve({ rows: [{ id: 'b1' }] });
+      if (text.includes('INSERT INTO tenant')) {
+        insertParams = params;
+        return Promise.resolve({ rows: [{ id: 't1', name: 'Klaus Bauer', phone: 'enc:x', title: 'Mister' }] });
+      }
+      return Promise.resolve({ rows: [] });
+    });
+
+    const res = await request(app)
+      .post('/api/tenants')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ buildingId: 'b1', name: 'Klaus Bauer', phone: '+491234567', title: 'Herr' });
+
+    expect(res.status).toBe(201);
+    // INSERT params: [buildingId, name, phone_enc, phone_hash, unit, title, status]
+    expect(insertParams[5]).toBe('Mister');
+  });
+
+  test('POST /api/tenants stores null for an unrecognized salutation rather than rejecting', async () => {
+    let insertParams = null;
+    db.query = jest.fn((text, params) => {
+      if (text.includes('FROM fm_admin fa')) return mockAuthLookup(FM_A_USER)(text);
+      if (text.includes('SELECT b.id FROM building b')) return Promise.resolve({ rows: [{ id: 'b1' }] });
+      if (text.includes('INSERT INTO tenant')) {
+        insertParams = params;
+        return Promise.resolve({ rows: [{ id: 't1', name: 'X', phone: 'enc:x', title: null }] });
+      }
+      return Promise.resolve({ rows: [] });
+    });
+
+    const res = await request(app)
+      .post('/api/tenants')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ buildingId: 'b1', name: 'X', phone: '+491234567', title: 'Divers' });
+
+    expect(res.status).toBe(201);
+    expect(insertParams[5]).toBeNull();
+  });
 });

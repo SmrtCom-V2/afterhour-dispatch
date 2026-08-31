@@ -19,6 +19,20 @@ const router = Router();
 
 router.use(authenticateToken);
 
+// tenant.title is the two-value enum the voice brain maps to Herr/Frau for a
+// recognized caller's greeting. Accept the enum values, the German words, and
+// a few common spellings; anything else (blank, "Divers", junk) becomes null
+// so the greeting falls back to no-name rather than speaking something wrong.
+const TITLE_MAP = {
+  mister: 'Mister', mr: 'Mister', herr: 'Mister', 'hr.': 'Mister', 'hr': 'Mister',
+  missus: 'Missus', mrs: 'Missus', ms: 'Missus', frau: 'Missus', 'fr.': 'Missus', 'fr': 'Missus',
+};
+function normalizeTitle(raw) {
+  if (raw === undefined) return undefined; // caller didn't send the field — leave column untouched on UPDATE
+  const key = String(raw || '').trim().toLowerCase().replace(/\.$/, '');
+  return TITLE_MAP[key] || null;
+}
+
 // GET /api/tenants - List all tenants for FM company
 router.get('/', async (req, res) => {
   try {
@@ -89,6 +103,7 @@ router.get('/:id', async (req, res) => {
 router.post('/', validate(createTenantSchema), async (req, res) => {
   try {
     const { buildingId, name, phone, unit, status } = req.body;
+    const title = normalizeTitle(req.body.title) ?? null;
 
     if (!buildingId || !name || !phone) {
       return res.status(400).json({ error: 'Building ID, name, and phone required' });
@@ -107,10 +122,10 @@ router.post('/', validate(createTenantSchema), async (req, res) => {
     }
 
     const result = await db.query(
-      `INSERT INTO tenant (building_id, name, phone, phone_hash, unit, status)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO tenant (building_id, name, phone, phone_hash, unit, title, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
        RETURNING *`,
-      [buildingId, name, encryptPhone(phone), hashPhone(phone), unit, status || 'active']
+      [buildingId, name, encryptPhone(phone), hashPhone(phone), unit, title, status || 'active']
     );
 
     logger.info('Tenant created', { tenantId: result.rows[0].id, buildingId });
@@ -127,6 +142,11 @@ router.put('/:id', validate(updateTenantSchema), async (req, res) => {
   try {
     const { id } = req.params;
     const { name, phone, unit, status } = req.body;
+    // undefined => field not sent, leave the column as-is. 'Mister'|'Missus'|null
+    // => set it (including deliberately clearing to null). The $7 flag below
+    // tells COALESCE-style SQL to apply $6 only when it was actually sent.
+    const title = normalizeTitle(req.body.title);
+    const titleProvided = title !== undefined;
 
     // Verify tenant belongs to this FM
     const check = await db.query(
@@ -147,10 +167,11 @@ router.put('/:id', validate(updateTenantSchema), async (req, res) => {
          phone = COALESCE($2, phone),
          phone_hash = COALESCE($3, phone_hash),
          unit = COALESCE($4, unit),
-         status = COALESCE($5, status)
-       WHERE id = $6
+         status = COALESCE($5, status),
+         title = CASE WHEN $7::boolean THEN $6 ELSE title END
+       WHERE id = $8
        RETURNING *`,
-      [name, encryptPhone(phone), hashPhone(phone), unit, status, id]
+      [name, encryptPhone(phone), hashPhone(phone), unit, status, title ?? null, titleProvided, id]
     );
 
     logger.info('Tenant updated', { tenantId: id });
@@ -227,10 +248,10 @@ router.post('/bulk', validate(bulkImportTenantsSchema), async (req, res) => {
 
       try {
         const result = await db.query(
-          `INSERT INTO tenant (building_id, name, phone, phone_hash, unit, status)
-           VALUES ($1, $2, $3, $4, $5, 'active')
+          `INSERT INTO tenant (building_id, name, phone, phone_hash, unit, title, status)
+           VALUES ($1, $2, $3, $4, $5, $6, 'active')
            RETURNING *`,
-          [buildingId, tenant.name, encryptPhone(tenant.phone), hashPhone(tenant.phone), tenant.unit]
+          [buildingId, tenant.name, encryptPhone(tenant.phone), hashPhone(tenant.phone), tenant.unit, normalizeTitle(tenant.title) ?? null]
         );
         inserted.push({ ...result.rows[0], phone: decryptPhone(result.rows[0].phone) });
       } catch (err) {

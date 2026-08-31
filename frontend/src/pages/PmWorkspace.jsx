@@ -1303,7 +1303,19 @@ function parseBuildingCsv(text) {
   return { rows, error: null };
 }
 
-// Parses a simple CSV with a header row: name,phone,unit (extra columns ignored)
+// Maps a CSV salutation cell (German or English, various spellings) to the
+// tenant.title enum the voice brain reads. Anything unrecognized -> '' (no
+// salutation), so the recognized-caller greeting drops the name rather than
+// speaking a wrong one.
+function csvTitleToEnum(raw) {
+  const k = String(raw || '').trim().toLowerCase().replace(/\.$/, '');
+  if (['herr', 'hr', 'mr', 'mister', 'm'].includes(k)) return 'Mister';
+  if (['frau', 'fr', 'mrs', 'ms', 'missus', 'w'].includes(k)) return 'Missus';
+  return '';
+}
+
+// Parses a simple CSV with a header row: name,phone,unit,title (extra columns
+// ignored; title also accepts "anrede" / "salutation" as the column name)
 function parseTenantCsv(text) {
   const lines = text.split(/\r?\n/).filter(l => l.trim().length > 0);
   if (lines.length < 2) return { rows: [], error: 'File has no data rows' };
@@ -1312,6 +1324,7 @@ function parseTenantCsv(text) {
   const nameIdx = header.indexOf('name');
   const phoneIdx = header.indexOf('phone');
   const unitIdx = header.indexOf('unit');
+  const titleIdx = ['title', 'anrede', 'salutation'].map(h => header.indexOf(h)).find(i => i !== -1) ?? -1;
 
   if (nameIdx === -1 || phoneIdx === -1) {
     return { rows: [], error: 'CSV must have "name" and "phone" columns' };
@@ -1323,17 +1336,23 @@ function parseTenantCsv(text) {
       name: cols[nameIdx] || '',
       phone: cols[phoneIdx] || '',
       unit: unitIdx !== -1 ? (cols[unitIdx] || '') : '',
+      title: titleIdx !== -1 ? csvTitleToEnum(cols[titleIdx]) : '',
     };
   }).filter(r => r.name && r.phone);
 
   return { rows, error: null };
 }
 
+// Herr / Frau prefix for display, from the tenant.title enum.
+function titlePrefix(title) {
+  return title === 'Mister' ? 'Herr ' : title === 'Missus' ? 'Frau ' : '';
+}
+
 // PM Tenants Component
 function PmTenants({ tenants, buildings, onRefresh }) {
   const [showModal, setShowModal] = useState(false);
   const [editingItem, setEditingItem] = useState(null);
-  const [form, setForm] = useState({ buildingId: '', name: '', phone: '', unit: '', email: '', floor: '', entrance: '', notes: '' });
+  const [form, setForm] = useState({ buildingId: '', name: '', phone: '', unit: '', title: '', email: '', floor: '', entrance: '', notes: '' });
   const [saving, setSaving] = useState(false);
 
   const [showImportModal, setShowImportModal] = useState(false);
@@ -1388,6 +1407,7 @@ function PmTenants({ tenants, buildings, onRefresh }) {
         name: tenant.name,
         phone: tenant.phone,
         unit: tenant.unit || '',
+        title: tenant.title || '',
         email: tenant.email || '',
         floor: tenant.floor || '',
         entrance: tenant.entrance || '',
@@ -1395,7 +1415,7 @@ function PmTenants({ tenants, buildings, onRefresh }) {
       });
     } else {
       setEditingItem(null);
-      setForm({ buildingId: buildings[0]?.id || '', name: '', phone: '', unit: '', email: '', floor: '', entrance: '', notes: '' });
+      setForm({ buildingId: buildings[0]?.id || '', name: '', phone: '', unit: '', title: '', email: '', floor: '', entrance: '', notes: '' });
     }
     setShowModal(true);
   };
@@ -1475,7 +1495,7 @@ function PmTenants({ tenants, buildings, onRefresh }) {
                 tenants.map((t) => (
                   <tr key={t.id}>
                     <td>
-                      <div className="table-cell-main">{t.name}</div>
+                      <div className="table-cell-main">{titlePrefix(t.title)}{t.name}</div>
                       {t.email && <div className="table-cell-sub">{t.email}</div>}
                     </td>
                     <td style={{ fontFamily: 'monospace' }}>{t.phone}</td>
@@ -1518,10 +1538,23 @@ function PmTenants({ tenants, buildings, onRefresh }) {
                   ))}
                 </select>
               </div>
-              <div className="form-group">
-                <label className="form-label">Tenant Name *</label>
-                <input type="text" className="form-input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
+              <div className="form-row">
+                <div className="form-group" style={{ flex: '0 0 140px' }}>
+                  <label className="form-label">Salutation</label>
+                  <select className="form-select" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })}>
+                    <option value="">—</option>
+                    <option value="Mister">Herr</option>
+                    <option value="Missus">Frau</option>
+                  </select>
+                </div>
+                <div className="form-group" style={{ flex: 1 }}>
+                  <label className="form-label">Tenant Name *</label>
+                  <input type="text" className="form-input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
+                </div>
               </div>
+              <p className="text-sm" style={{ color: 'var(--color-text-secondary)', marginTop: -8, marginBottom: 12 }}>
+                Salutation is used to address the tenant by name when they call ("Wie kann ich Ihnen helfen, Herr Bauer?"). Leave blank if unknown.
+              </p>
               <div className="form-row">
                 <div className="form-group" style={{ flex: 1 }}>
                   <label className="form-label">Phone *</label>
@@ -1586,7 +1619,7 @@ function PmTenants({ tenants, buildings, onRefresh }) {
                   <div className="form-group">
                     <label className="form-label">CSV File</label>
                     <div className="text-sm text-muted" style={{ marginBottom: 8 }}>
-                      File must have a header row with columns: <code>name, phone, unit</code> (unit is optional).
+                      File must have a header row with columns: <code>name, phone</code> (required) and optionally <code>unit</code>, <code>title</code> (Herr / Frau — used to address the tenant by name when they call).
                     </div>
                     <input
                       ref={fileInputRef}
@@ -1614,6 +1647,7 @@ function PmTenants({ tenants, buildings, onRefresh }) {
                         <table>
                           <thead>
                             <tr>
+                              <th>Salutation</th>
                               <th>Name</th>
                               <th>Phone</th>
                               <th>Unit</th>
@@ -1622,6 +1656,7 @@ function PmTenants({ tenants, buildings, onRefresh }) {
                           <tbody>
                             {importRows.map((r, i) => (
                               <tr key={i}>
+                                <td>{r.title === 'Mister' ? 'Herr' : r.title === 'Missus' ? 'Frau' : '-'}</td>
                                 <td>{r.name}</td>
                                 <td style={{ fontFamily: 'monospace' }}>{r.phone}</td>
                                 <td>{r.unit || '-'}</td>
