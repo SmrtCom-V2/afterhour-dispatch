@@ -50,6 +50,7 @@ import SaCompanyBilling from './sa/pages/SaCompanyBilling';
 import { CookieConsent } from './components/CookieConsent';
 import { EntitlementsProvider } from './context/EntitlementsContext';
 import SettingsPlanAddons from './pages/SettingsPlanAddons';
+import SettingsTelephony from './pages/SettingsTelephony';
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth();
@@ -144,6 +145,7 @@ function AppRoutes() {
       <Route path="/employees" element={<ProtectedRoute><Employees /></ProtectedRoute>} />
       <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
       <Route path="/settings/plan-addons" element={<ProtectedRoute><SettingsPlanAddons /></ProtectedRoute>} />
+      <Route path="/settings/telephony" element={<ProtectedRoute><SettingsTelephony /></ProtectedRoute>} />
       <Route path="/admin" element={<AdminRoute><AdminDashboard /></AdminRoute>} />
       {/*
         Catch-all. Without this, any unmatched URL rendered a completely blank

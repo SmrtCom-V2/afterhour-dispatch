@@ -15,6 +15,7 @@ import { sendEmail } from '../utils/email.js';
 import { grantAfterHourEntitlement, revokeAfterHourEntitlement } from '../services/identityService.js';
 import { getFrontendUrl } from '../utils/frontendUrl.js';
 import { sendOpsAlert } from '../utils/opsAlert.js';
+import { syncDedicatedNumberBilling } from '../services/telephonyBilling.js';
 
 const router = Router();
 
@@ -136,6 +137,19 @@ async function handleCheckoutCompleted(session) {
   // webhook's 200 ack, since Stripe would then retry a checkout that already
   // succeeded in this product's own database.
   await grantAfterHourEntitlement(companyId, `stripe:${session.subscription}`);
+
+  // If the customer picked a dedicated number at checkout, the €4.99 line item
+  // was already added to the checkout session. Now that they have a real
+  // subscription, reconcile the add-on quantity against however many numbers
+  // are actually provisioned (usually 0 at this exact moment — the frontend
+  // provisions right after redirect — but this makes the state self-healing).
+  // Best-effort: never fail the webhook ack over billing.
+  try {
+    const billing = await syncDedicatedNumberBilling(companyId);
+    logger.info('Telephony billing reconciled on checkout', { companyId, action: billing.action || billing.error });
+  } catch (e) {
+    logger.warn('Telephony billing reconcile on checkout failed (non-fatal)', { companyId, error: e.message });
+  }
 }
 
 /**
@@ -241,6 +255,33 @@ async function handleSubscriptionDeleted(subscription) {
   // Sprint 4: mirror the grant above — cancellation revokes the shared
   // entitlement too, same best-effort contract (never blocks this webhook).
   await revokeAfterHourEntitlement(companyId);
+
+  // The whole subscription is gone, so the dedicated-number line item went
+  // with it — but do NOT release the Twilio DIDs here. A cancelled
+  // subscription can still be in its paid-through period, and a customer who
+  // resubscribes should keep their number. Flag it and alert ops; actual
+  // teardown is a deliberate step (support, or a grace-period cleanup job),
+  // matching the 7-day dunning grace pattern elsewhere in this file.
+  try {
+    const stillHasNumbers = await db.query(
+      `SELECT COUNT(*)::int AS n FROM provisioned_number
+       WHERE fm_company_id = $1 AND status = 'active'`,
+      [companyId]
+    );
+    if (stillHasNumbers.rows[0].n > 0) {
+      await db.query(
+        `INSERT INTO company_events (company_id, type, actor_type, metadata)
+         VALUES ($1, 'telephony_needs_teardown', 'system', $2)`,
+        [companyId, JSON.stringify({ activeNumbers: stillHasNumbers.rows[0].n, reason: 'subscription_cancelled' })]
+      );
+      await sendOpsAlert(
+        'telephony_teardown_pending',
+        `Company ${companyId} cancelled their subscription but still has ${stillHasNumbers.rows[0].n} provisioned Twilio number(s). Release them via /api/telephony/release after the grace period, or Twilio keeps billing us.`
+      );
+    }
+  } catch (e) {
+    logger.warn('Telephony teardown flag on cancel failed (non-fatal)', { companyId, error: e.message });
+  }
 }
 
 /**

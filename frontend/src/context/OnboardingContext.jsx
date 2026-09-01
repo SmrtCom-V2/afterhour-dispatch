@@ -29,6 +29,14 @@ const ONBOARDING_STEPS = [
     route: '/pm-companies',
   },
   {
+    id: 'setup_emergency_line',
+    titleKey: 'onboardingEmergencyLineTitle',
+    descriptionKey: 'onboardingEmergencyLineDesc',
+    completed: false,
+    route: '/settings/telephony',
+    blocking: true, // without this the product does not work — dashboard shows a banner until done
+  },
+  {
     id: 'add_service_provider',
     titleKey: 'onboardingAddSpTitle',
     descriptionKey: 'onboardingAddSpDesc',
@@ -169,6 +177,15 @@ export function OnboardingProvider({ children }) {
         }
       } catch (e) { /* ignore */ }
 
+      // Check emergency line — complete when at least one PM company has an
+      // active service_phone. Also drives the blocking dashboard banner.
+      try {
+        const tel = await api.getTelephonyStatus();
+        const anyActive = (tel.pmCompanies || []).some(p => p.service_phone_status === 'active');
+        const step = updatedSteps.find(s => s.id === 'setup_emergency_line');
+        if (step) step.completed = anyActive;
+      } catch (e) { /* ignore */ }
+
       // Check Service Providers
       try {
         const spRes = await api.getServiceProviders();
@@ -268,6 +285,12 @@ export function OnboardingProvider({ children }) {
   const progress = Math.round((completedCount / totalCount) * 100);
   const isComplete = completedCount === totalCount;
 
+  // A blocking step that isn't done yet — the dashboard shows a persistent
+  // red banner for this (the emergency line: without it, tenants literally
+  // cannot reach After Hour). Not gated by `dismissed` — you can hide the
+  // checklist but not this.
+  const blockingStep = steps.find(s => s.blocking && !s.completed) || null;
+
   const translatedTourSteps = TOUR_STEPS.map(s => ({
     ...s,
     title: t(s.titleKey) || s.titleKey,
@@ -286,6 +309,7 @@ export function OnboardingProvider({ children }) {
     isComplete,
     completedCount,
     totalCount,
+    blockingStep,
     currentTourStep: translatedTourSteps[tourStep],
     tourSteps: translatedTourSteps,
 

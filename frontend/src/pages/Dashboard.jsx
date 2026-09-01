@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../utils/api';
-import { OnboardingChecklist } from '../components/Onboarding';
+import { OnboardingChecklist, EmergencyLineBanner } from '../components/Onboarding';
 import { useLanguage } from '../context/LanguageContext';
 
 // Icons
@@ -260,6 +260,9 @@ export function Dashboard() {
 
   return (
     <div>
+      {/* Blocking: emergency line not set up — tenants can't reach us */}
+      <EmergencyLineBanner />
+
       {/* Onboarding Checklist */}
       <OnboardingChecklist />
 

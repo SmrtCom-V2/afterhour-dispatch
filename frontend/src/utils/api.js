@@ -419,11 +419,59 @@ class ApiClient {
     return this.request(`/billing/plans?lang=${language}&_=${Date.now()}`);
   }
 
-  async createCheckoutSession(priceId) {
+  async createCheckoutSession(priceId, opts = {}) {
     return this.request('/billing/create-checkout', {
       method: 'POST',
-      body: JSON.stringify({ priceId }),
+      body: JSON.stringify({ priceId, ...opts }),
     });
+  }
+
+  // Telephony / after-hours number provisioning
+  async getTelephonyStatus() {
+    return this.request('/telephony/status');
+  }
+
+  async getAvailableNumbers({ type = 'local', areaCode = '30' } = {}) {
+    const qs = new URLSearchParams({ type, ...(areaCode ? { areaCode } : {}) });
+    return this.request(`/telephony/available?${qs}`);
+  }
+
+  async provisionNumber(pmCompanyId, opts = {}) {
+    return this.request('/telephony/provision', {
+      method: 'POST',
+      body: JSON.stringify({ pmCompanyId, ...opts }),
+    });
+  }
+
+  async setupByoForward(pmCompanyId, publishedNumber) {
+    return this.request('/telephony/byo-forward', {
+      method: 'POST',
+      body: JSON.stringify({ pmCompanyId, publishedNumber }),
+    });
+  }
+
+  async startTelephonyVerification(pmCompanyId) {
+    return this.request('/telephony/verify-test-call', {
+      method: 'POST',
+      body: JSON.stringify({ pmCompanyId }),
+    });
+  }
+
+  async confirmTelephonyHeard(verificationId) {
+    return this.request(`/telephony/verify-test-call/${verificationId}/confirm-heard`, {
+      method: 'POST',
+    });
+  }
+
+  async releaseTelephonyNumber(pmCompanyId) {
+    return this.request('/telephony/release', {
+      method: 'POST',
+      body: JSON.stringify({ pmCompanyId, confirm: true }),
+    });
+  }
+
+  async getCarrierForwarding(lang = 'de') {
+    return this.request(`/telephony/carriers?lang=${lang}`);
   }
 
   async createBillingPortal() {

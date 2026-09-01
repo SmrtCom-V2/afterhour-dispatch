@@ -16,6 +16,7 @@ import { authenticateToken } from '../middleware/auth.js';
 import { getFrontendUrl } from '../utils/frontendUrl.js';
 import { validate } from '../middleware/validate.js';
 import { createCheckoutSchema } from '../validators/billing.js';
+import { dedicatedNumberCheckoutLineItem, DEDICATED_NUMBER_PRICE_CENTS } from '../services/telephonyBilling.js';
 
 const router = Router();
 
@@ -153,7 +154,7 @@ router.post('/create-checkout', authenticateToken, checkStripeConfig, validate(c
     const stripe = await getStripe();
 
     const companyId = req.user.fm_company_id;
-    const { priceId, successUrl, cancelUrl } = req.body;
+    const { priceId, successUrl, cancelUrl, wantDedicatedNumber } = req.body;
 
     // Get or create Stripe customer
     let subscription = await db.query(
@@ -188,17 +189,35 @@ router.post('/create-checkout', authenticateToken, checkStripeConfig, validate(c
 
     // Create checkout session
     const frontendUrl = getFrontendUrl();
+
+    const lineItems = [{
+      price: priceId || process.env.STRIPE_PRICE_ID_MONTHLY,
+      quantity: 1
+    }];
+
+    // Customer chose a dedicated after-hours number at checkout — add the
+    // €4.99/mo add-on as a second line item so it's on the subscription from
+    // day one. The actual Twilio number is provisioned post-checkout (the
+    // frontend calls /api/telephony/provision once they're back in the app),
+    // and syncDedicatedNumberBilling reconciles quantity from there on.
+    if (wantDedicatedNumber) {
+      const addOn = dedicatedNumberCheckoutLineItem();
+      if (addOn) {
+        lineItems.push(addOn);
+      } else {
+        logger.warn('wantDedicatedNumber set but STRIPE_PRICE_ID_DEDICATED_NUMBER not configured', { companyId });
+      }
+    }
+
     const session = await stripe.checkout.sessions.create({
       customer: stripeCustomerId,
       mode: 'subscription',
-      line_items: [{
-        price: priceId || process.env.STRIPE_PRICE_ID_MONTHLY,
-        quantity: 1
-      }],
+      line_items: lineItems,
       success_url: successUrl || `${frontendUrl}/settings?billing=success`,
       cancel_url: cancelUrl || `${frontendUrl}/settings?billing=cancelled`,
       metadata: {
-        companyId
+        companyId,
+        wantDedicatedNumber: wantDedicatedNumber ? '1' : '0'
       }
     });
 
@@ -294,6 +313,15 @@ router.get('/plans', async (req, res) => {
           : '2 months free with annual payment (~17% discount)',
         percentage: 17,
         waivesOnboarding: true
+      },
+      dedicatedNumber: {
+        priceCents: DEDICATED_NUMBER_PRICE_CENTS,
+        priceLabel: `€${(DEDICATED_NUMBER_PRICE_CENTS / 100).toFixed(2)}`,
+        interval: lang === 'de' ? 'Monat' : 'month',
+        description: lang === 'de'
+          ? 'Eigene Notfall-Rufnummer, sofort einsatzbereit. Alternativ leiten Sie Ihre bestehende Nummer kostenlos weiter.'
+          : 'Your own dedicated emergency number, live immediately. Or forward your existing line for free.',
+        available: !!process.env.STRIPE_PRICE_ID_DEDICATED_NUMBER
       },
       stripeConfigured: !!process.env.STRIPE_SECRET_KEY
     });

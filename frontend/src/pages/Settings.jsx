@@ -174,6 +174,8 @@ export function Settings() {
   // Billing
   const [billing, setBilling] = useState(null);
   const [plans, setPlans] = useState([]);
+  const [dedicatedNumber, setDedicatedNumber] = useState(null); // { priceLabel, interval, description, available }
+  const [wantDedicatedNumber, setWantDedicatedNumber] = useState(true); // pre-selected per spec §4.0
   const [billingLoading, setBillingLoading] = useState(false);
 
   // Privacy / GDPR
@@ -368,6 +370,7 @@ export function Settings() {
       ]);
       setBilling(statusRes);
       setPlans(plansRes.plans || []);
+      setDedicatedNumber(plansRes.dedicatedNumber || null);
     } catch (err) {
       console.error('Failed to load billing:', err);
     } finally {
@@ -378,7 +381,10 @@ export function Settings() {
   const handleSubscribe = async (priceId) => {
     setSaving(true);
     try {
-      const result = await api.createCheckoutSession(priceId);
+      const result = await api.createCheckoutSession(priceId, {
+        // Only pass the flag if a dedicated number is actually offered.
+        wantDedicatedNumber: !!(dedicatedNumber?.available && wantDedicatedNumber),
+      });
       if (result.url) {
         window.location.href = result.url;
       }
@@ -1016,6 +1022,37 @@ export function Settings() {
                         <line x1="12" y1="8" x2="12.01" y2="8"/>
                       </svg>
                       <span>{t('onlinePaymentsComingSoon')}</span>
+                    </div>
+                  )}
+
+                  {/* After-hours number choice — spec §4.0: asked at the plan/checkout step */}
+                  {dedicatedNumber?.available && (
+                    <div className="card" style={{ marginBottom: 20, maxWidth: 640 }}>
+                      <div className="card-body">
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z" />
+                          </svg>
+                          <strong style={{ fontSize: 15 }}>{t('yourEmergencyNumber')}</strong>
+                        </div>
+                        <p style={{ fontSize: 13, color: 'var(--color-text-secondary)', marginBottom: 12 }}>
+                          {dedicatedNumber.description}
+                        </p>
+                        <label style={{ display: 'flex', gap: 10, alignItems: 'flex-start', padding: '10px 12px', border: `1px solid ${wantDedicatedNumber ? 'var(--color-primary)' : 'var(--color-border)'}`, borderRadius: 8, marginBottom: 8, cursor: 'pointer' }}>
+                          <input type="radio" name="numchoice" checked={wantDedicatedNumber} onChange={() => setWantDedicatedNumber(true)} style={{ marginTop: 3 }} />
+                          <span style={{ fontSize: 14 }}>
+                            <strong>{t('getDedicatedNumber')}</strong> — {dedicatedNumber.priceLabel}/{dedicatedNumber.interval}
+                            <br /><span style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>{t('lineIsLive')}</span>
+                          </span>
+                        </label>
+                        <label style={{ display: 'flex', gap: 10, alignItems: 'flex-start', padding: '10px 12px', border: `1px solid ${!wantDedicatedNumber ? 'var(--color-primary)' : 'var(--color-border)'}`, borderRadius: 8, cursor: 'pointer' }}>
+                          <input type="radio" name="numchoice" checked={!wantDedicatedNumber} onChange={() => setWantDedicatedNumber(false)} style={{ marginTop: 3 }} />
+                          <span style={{ fontSize: 14 }}>
+                            <strong>{t('useMyOwnNumber')}</strong>
+                            <br /><span style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>{t('forwardYourLineTo')} …</span>
+                          </span>
+                        </label>
+                      </div>
                     </div>
                   )}
 

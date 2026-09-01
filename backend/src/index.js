@@ -59,6 +59,7 @@ import saEntitlementsRoutes from './routes/saEntitlements.js';
 import customerEntitlementsRoutes from './routes/customerEntitlements.js';
 import employeesRoutes from './routes/employees.js';
 import oncallRoutes from './routes/oncall.js';
+import telephonyRoutes from './routes/telephony.js';
 import settingsRoutes from './routes/settings.js';
 import registerRoutes from './routes/register.js';
 import passwordResetRoutes from './routes/passwordReset.js';
@@ -188,6 +189,7 @@ app.use('/api/incidents', authenticateToken, requireActiveSubscription, incident
 app.use('/api/reports', authenticateToken, requireActiveSubscription, reportsRoutes);
 app.use('/api/employees', authenticateToken, requireActiveSubscription, employeesRoutes);
 app.use('/api/oncall', authenticateToken, requireActiveSubscription, oncallRoutes);
+app.use('/api/telephony', authenticateToken, requireActiveSubscription, telephonyRoutes);
 app.use('/api/sp-report', spReportRoutes);
 app.use('/api/webhooks', webhooksRoutes);
 // Internal service-to-service only — own auth (shared secret) inside the route file, not session/JWT.
