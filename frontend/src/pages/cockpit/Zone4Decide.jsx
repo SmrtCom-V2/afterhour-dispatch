@@ -172,7 +172,7 @@ export function Zone4Decide({
         {strings.actionSendCompany}
       </button>
 
-      <div style={s.dividerLabel}>— or —</div>
+      <div style={s.dividerLabel}>{strings.lang === 'de' ? '— oder —' : '— or —'}</div>
 
       {/* secondary */}
       <button

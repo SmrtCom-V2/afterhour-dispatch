@@ -99,7 +99,7 @@ export function CockpitForwardView() {
             </div>
           </>
         )}
-        <p style={{ ...s.confNote, marginTop: '12px' }}>{relativeTime(incident.createdAt)}</p>
+        <p style={{ ...s.confNote, marginTop: '12px' }}>{relativeTime(incident.createdAt, strings.lang)}</p>
       </Section>
 
       <Section title={strings.where}>

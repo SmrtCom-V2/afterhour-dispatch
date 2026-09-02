@@ -1,9 +1,11 @@
 /**
- * On-call cockpit copy. English-first (Ron, 2026-09-02 — German is added later
- * as a `de` key, same shape). The language is chosen by the CALL's language
- * (`incident` payload → future field), NOT a UI toggle: the on-call person is
- * not a logged-in user with a saved preference. Until the call carries a
- * language, everything is `en`.
+ * On-call cockpit copy. The language is chosen by the CALL's language
+ * (`incident.callLanguage` in the payload), NOT a UI toggle: the on-call
+ * person is not a logged-in user with a saved preference. Falls back to `en`.
+ *
+ * `de` mirrors `en` key-for-key (getStrings throws in dev if a key is missing).
+ * German terminology reuses the vetted 3am wording from the original cockpit
+ * and the app's LanguageContext (NOTFALL / Dienstleister / Gewerk / Mieter).
  */
 
 const en = {
@@ -152,10 +154,182 @@ function ordinal(n) {
   return n + (s[(v - 20) % 10] || s[v] || s[0]);
 }
 
-const STRINGS = { en };
+// German. Reuses the vetted terms: NOTFALL, DRINGEND, NICHT DRINGEND,
+// Dienstleister, Gewerk, Mieter, Hausmeister, Zugangscodes.
+const de = {
+  loading: 'Lädt…',
+  linkExpired: 'Dieser Link ist abgelaufen.',
+  incidentNotFound: 'Vorfall nicht gefunden.',
+  connectionFailed: 'Verbindung fehlgeschlagen.',
 
+  badgeEmergency: 'NOTFALL',
+  badgeUrgent: 'DRINGEND',
+  badgeUnsure: 'AI UNSICHER — DEINE EINSCHÄTZUNG',
+  badgeNotUrgent: 'NICHT DRINGEND',
+  recommendSendCompany: 'Empfehlung: Dienstleister jetzt schicken',
+  recommendDefer: 'Empfehlung: kann bis morgen warten',
+  recommendReadAndDecide: 'Gesprächsverlauf unten lesen und entscheiden',
+  autoDispatchIn: 'Automatischer Einsatz in',
+  autoDispatchImminent: 'Automatischer Einsatz steht unmittelbar bevor',
+  autoDispatchExplain:
+    'Wenn niemand entscheidet, schickt das System 10 Minuten nach dem Anruf automatisch einen Dienstleister.',
+
+  aiCouldNotJudge: 'Die AI konnte die Dringlichkeit nicht einschätzen.',
+  aiCouldNotJudgeSub: 'Bitte den Gesprächsverlauf unten lesen und selbst entscheiden.',
+  aiThinksEmergency: 'AI-Einschätzung: Notfall',
+  aiThinksNotEmergency: 'AI-Einschätzung: kein Notfall',
+  aiConfidenceInProblem: (n) => `AI ist zu ${n}% sicher, das Problem richtig verstanden zu haben`,
+  aiLowConfidence: '— geringe Sicherheit, Gesprächsverlauf lesen',
+  whatCallerReported: 'Was der Anrufer gemeldet hat',
+  whatsUnusual: 'Was du wissen solltest',
+  recurringIssue: (n, cat) => `${ordinalDe(n)} ${cat}-Vorfall an diesem Objekt in den letzten 30 Tagen`,
+  recurringAny: (n) => `${n} weitere${n === 1 ? 'r' : ''} Vorfall${n === 1 ? '' : 'e'} an diesem Objekt in den letzten 30 Tagen`,
+  codesAttached: 'Zugangscodes des Gebäudes sind unten hinterlegt',
+  callDegraded: 'Wegen einer technischen Störung im Anruf können einige Angaben unvollständig sein',
+
+  verifiedCaller: (name) => `Anrufer verifiziert${name ? `: ${name}` : ''}`,
+  partialMatchCaller: (name) => `Identität teilweise bestätigt${name ? `: ${name}` : ''}`,
+  unverifiedCaller: 'Identität des Anrufers nicht bestätigt',
+  nameMismatch: (given, onFile) => `Anrufer nannte „${given}" — hinterlegte Nummer gehört zu ${onFile}`,
+
+  detailToggleShow: 'Gesamten Anruf anzeigen',
+  detailToggleHide: 'Anrufdetails ausblenden',
+  callSummary: 'Zusammenfassung des Anrufs',
+  questionsAsked: 'Was die AI gefragt hat',
+  fullTranscript: 'Vollständiger Gesprächsverlauf',
+  where: 'Wo',
+  property: 'Objekt',
+  address: 'Adresse',
+  callTenant: (name) => `Mieter anrufen${name ? ` (${name})` : ''}`,
+  janitor: 'Hausmeister',
+  history: 'Verlauf an diesem Objekt',
+  contactedSoFar: 'Bereits kontaktiert',
+  noHistory: 'Keine früheren Vorfälle an diesem Objekt.',
+  outcomeLabel: {
+    dispatched: 'Dienstleister geschickt',
+    dispatched_manual: 'Dienstleister geschickt (direkt angerufen)',
+    owner_on_site: 'vor Ort erledigt',
+    deferred_morning: 'auf morgen verschoben',
+    escalated_to_fm: 'an FM eskaliert',
+    stabilized_pending_repair: 'stabilisiert, Reparatur folgt',
+    resolved_night: 'in der Nacht gelöst',
+    callback_pending: 'Rückruf läuft',
+  },
+
+  waterShutoff: 'Wasserhaupthahn',
+  gasShutoff: 'Gashaupthahn',
+  electricShutoff: 'Stromkasten',
+  keySafe: 'Schlüsseltresor',
+  gateCode: 'Hoftor-Code',
+  entranceCode: 'Hauseingang-Code',
+
+  decide: 'Entscheidung',
+  overridePrompt:
+    'Weicht deine Entscheidung von der AI-Einschätzung ab? Grund optional angeben (hilft, die AI zu verbessern):',
+  overrideNone: '— kein Grund angegeben —',
+  overrideReasons: {
+    ai_missed_a_fact: 'AI hat eine Tatsache übersehen',
+    ai_misjudged_severity: 'AI hat die Dringlichkeit falsch eingeschätzt',
+    caller_gave_more_info_after_call: 'Anrufer gab nach dem Anruf mehr Infos',
+    tier_right_tone_off: 'Einschätzung war richtig, Tonfall daneben',
+    other: 'Sonstiges',
+  },
+  actionSendCompany: 'Dienstleister schicken',
+  actionCallTenant: 'Zuerst den Mieter zurückrufen',
+  actionOwnerOnSite: 'Ich kümmere mich selbst darum',
+  actionEscalateFm: (name) => `An ${name || 'FM-Bereitschaft'} eskalieren`,
+  actionDefer: 'Nicht dringend — kann bis morgen warten',
+  actionForward: 'Sichere Zusammenfassung weiterleiten (ohne Zugangscodes)',
+
+  pickProvider: 'Welcher Dienstleister?',
+  suggestedTag: 'Empfohlen',
+  rankTag: (n) => (n === 1 ? '1. Wahl des Objekts' : `${n}. Wahl des Objekts`),
+  open24h: '24/7',
+  openNow: 'Jetzt erreichbar',
+  closedNow: (from, to) => `Jetzt geschlossen · ${from}–${to}`,
+  systemCallsThem: 'System ruft an',
+  illCallThem: 'Ich rufe selbst an',
+  noProviderForTrade: 'Kein Dienstleister für dieses Gewerk hinterlegt.',
+
+  confirmSendTitle: (co) => `${co} jetzt anrufen?`,
+  confirmManualTitle: (co) => `${co} als beauftragt markieren?`,
+  confirmManualBody:
+    'Du rufst selbst an. Der Dienstleister erhält den Berichts-Link und den Hinweis „kein Bericht = keine Zahlung".',
+  confirm: 'Bestätigen',
+  back: 'Zurück',
+  cancel: 'Abbrechen',
+
+  callbackRecorded: 'Rückruf notiert. Ruf den Mieter an und entscheide dann.',
+  callbackCountNote: (n) => `Du hast ${n} Rückruf${n === 1 ? '' : 'e'} zu diesem Vorfall notiert.`,
+  stillNeedToDecide: 'Du musst noch entscheiden — die Uhr für den automatischen Einsatz läuft.',
+
+  forwardCreating: 'Link wird erstellt…',
+  forwardReady: 'Link zur sicheren Zusammenfassung ist bereit — kopieren und senden:',
+  forwardCopy: 'Link kopieren',
+  forwardCopied: 'Kopiert',
+  forwardExplain: 'Dieser Link zeigt nur die Zusammenfassung und den Gesprächsverlauf. Keine Zugangscodes.',
+
+  decisionMade: 'Entscheidung getroffen',
+  decidedBy: (name) => `Bearbeitet von ${name}.`,
+  decidedByUnknown: 'Bereits bearbeitet.',
+  result: 'Ergebnis',
+  recordNightResult: 'Festhalten, wie die Nacht ausging:',
+  noteOptional: 'Notiz (optional)',
+  outcomeStabilized: 'Stabilisiert — Reparatur morgen',
+  outcomeResolved: 'Heute Nacht vollständig gelöst',
+  alreadyDecidedBy: (name, outcome) =>
+    `${name ? `${name} hat bereits entschieden` : 'Bereits entschieden'}: ${outcome}.`,
+
+  actionFailed: 'Das hat nicht geklappt. Bitte erneut versuchen.',
+  noFmConfigured:
+    'Für diesen Kunden ist keine FM-Bereitschaftsnummer hinterlegt. Nutze eine andere Option oder ruf deinen Verantwortlichen direkt an.',
+};
+
+function ordinalDe(n) {
+  return `${n}.`;
+}
+
+en.lang = 'en';
+de.lang = 'de';
+
+const STRINGS = { en, de };
+
+/**
+ * Shallow key-parity check between locales — a missing translation key would
+ * otherwise surface as `undefined` in the 3am UI. Returns the missing keys
+ * per locale (empty object = all good). Used by the test and by getStrings
+ * in dev.
+ */
+export function missingKeys() {
+  const base = Object.keys(en);
+  const out = {};
+  for (const [lang, obj] of Object.entries(STRINGS)) {
+    if (lang === 'en') continue;
+    const miss = base.filter((k) => !(k in obj));
+    if (miss.length) out[lang] = miss;
+  }
+  return out;
+}
+
+let devChecked = false;
 export function getStrings(lang) {
-  return STRINGS[lang] || STRINGS.en;
+  const picked = STRINGS[lang] || STRINGS.en;
+  // Dev-only, once: warn if a non-en locale is missing keys. Wrapped in a
+  // try so a non-Vite runtime (node --test) doesn't choke on import.meta.
+  if (!devChecked) {
+    devChecked = true;
+    try {
+      if (import.meta.env.DEV) {
+        const miss = missingKeys();
+        for (const [l, keys] of Object.entries(miss)) {
+          console.warn(`[cockpitStrings] ${l} missing keys:`, keys);
+        }
+      }
+    } catch {
+      /* not a Vite build — skip */
+    }
+  }
+  return picked;
 }
 
 export default STRINGS;

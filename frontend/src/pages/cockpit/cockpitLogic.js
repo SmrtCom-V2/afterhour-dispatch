@@ -42,14 +42,21 @@ export function aiHasImpliedAction(urgencyKey) {
   return Boolean(AI_IMPLIED_ACTION[urgencyKey]);
 }
 
-/** "4 minutes ago" reads faster under stress than a clock time. */
-export function relativeTime(isoString, now = Date.now()) {
+/**
+ * "4 minutes ago" reads faster under stress than a clock time.
+ * `lang` picks the phrasing; unknown → English.
+ */
+export function relativeTime(isoString, lang = 'en', now = Date.now()) {
   if (!isoString) return '';
-  const diffMs = now - new Date(isoString).getTime();
-  const mins = Math.round(diffMs / 60000);
+  const mins = Math.round((now - new Date(isoString).getTime()) / 60000);
+  const hours = Math.round(mins / 60);
+  if (lang === 'de') {
+    if (mins < 1) return 'gerade eben';
+    if (mins < 60) return `vor ${mins} Minute${mins === 1 ? '' : 'n'}`;
+    return `vor ${hours} Stunde${hours === 1 ? '' : 'n'}`;
+  }
   if (mins < 1) return 'just now';
   if (mins < 60) return `${mins} minute${mins === 1 ? '' : 's'} ago`;
-  const hours = Math.round(mins / 60);
   return `${hours} hour${hours === 1 ? '' : 's'} ago`;
 }
 

@@ -54,13 +54,22 @@ test('aiHasImpliedAction', () => {
   assert.equal(aiHasImpliedAction('urgent'), false);
 });
 
-test('relativeTime', () => {
+test('relativeTime — English', () => {
   const now = new Date('2026-09-02T03:00:00Z').getTime();
-  assert.equal(relativeTime('2026-09-02T02:59:40Z', now), 'just now');
-  assert.equal(relativeTime('2026-09-02T02:56:00Z', now), '4 minutes ago');
-  assert.equal(relativeTime('2026-09-02T02:59:00Z', now), '1 minute ago');
-  assert.equal(relativeTime('2026-09-02T01:00:00Z', now), '2 hours ago');
-  assert.equal(relativeTime(null, now), '');
+  assert.equal(relativeTime('2026-09-02T02:59:40Z', 'en', now), 'just now');
+  assert.equal(relativeTime('2026-09-02T02:56:00Z', 'en', now), '4 minutes ago');
+  assert.equal(relativeTime('2026-09-02T02:59:00Z', 'en', now), '1 minute ago');
+  assert.equal(relativeTime('2026-09-02T01:00:00Z', 'en', now), '2 hours ago');
+  assert.equal(relativeTime(null, 'en', now), '');
+  assert.equal(relativeTime('2026-09-02T02:56:00Z', undefined, now), '4 minutes ago'); // default en
+});
+
+test('relativeTime — German', () => {
+  const now = new Date('2026-09-02T03:00:00Z').getTime();
+  assert.equal(relativeTime('2026-09-02T02:59:40Z', 'de', now), 'gerade eben');
+  assert.equal(relativeTime('2026-09-02T02:56:00Z', 'de', now), 'vor 4 Minuten');
+  assert.equal(relativeTime('2026-09-02T02:59:00Z', 'de', now), 'vor 1 Minute');
+  assert.equal(relativeTime('2026-09-02T01:00:00Z', 'de', now), 'vor 2 Stunden');
 });
 
 test('msRemaining / formatMs — the T+10 countdown', () => {
