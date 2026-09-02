@@ -256,22 +256,6 @@ router.get('/:token', async (req, res) => {
 
     const suggested = spList.rows.find((sp) => sp.trade === requiredTrade) || spList.rows[0] || null;
 
-    // Explicit suggested-action label (gap found in the 2026-08-30 cockpit
-    // UX review — the badge color implied an action but never said it in
-    // words). Computed once, server-side, from the real decision/ai_urgency.
-    const suggestedAction =
-      incident.decision === 'emergency_dispatch' || incident.ai_urgency === 'critical'
-        ? 'send_company'
-        : incident.decision === 'not_emergency' || incident.ai_urgency === 'low'
-        ? 'defer_morning'
-        : null; // unclear/urgent: no single suggested action, human must read and decide
-
-    // Other wake-up attempts so far, for "already handled by X" display.
-    const wakeups = await db.query(
-      `SELECT stage, channel, result, created_at FROM wakeup_attempt WHERE incident_id = $1 ORDER BY created_at`,
-      [incident.id],
-    );
-
     // The AI's post-call brief (headline, what was reported, the Q&A, the
     // emergency read incl. "unsure", suggested actions). Written by the voice
     // brain's generateIncidentSummary() to incident_timeline right after the
@@ -284,6 +268,31 @@ router.get('/:token', async (req, res) => {
       [incident.id],
     );
     const aiBrief = briefRow.rows[0]?.event_data || null;
+
+    // Explicit suggested-action label (gap found in the 2026-08-30 cockpit
+    // UX review — the badge color implied an action but never said it in
+    // words). Computed once, server-side. Falls back to the AI brief's own
+    // emergency read for incidents where ai_urgency was never written (the
+    // live voice-brain-direct-twilio-poc path only writes decision/
+    // ai_confidence, not ai_urgency — see the urgencyKeyFor comment on the
+    // frontend). 'unsure' → no suggested action, the human must read and decide.
+    const briefEmergency = aiBrief?.emergency_assessment?.is_emergency;
+    const suggestedAction =
+      incident.decision === 'emergency_dispatch' ||
+      incident.ai_urgency === 'critical' ||
+      briefEmergency === 'yes'
+        ? 'send_company'
+        : incident.decision === 'not_emergency' ||
+          incident.ai_urgency === 'low' ||
+          briefEmergency === 'no'
+        ? 'defer_morning'
+        : null;
+
+    // Other wake-up attempts so far, for "already handled by X" display.
+    const wakeups = await db.query(
+      `SELECT stage, channel, result, created_at FROM wakeup_attempt WHERE incident_id = $1 ORDER BY created_at`,
+      [incident.id],
+    );
 
     // Security: cockpit links can be forwarded (single-use-per-decision and
     // 12h expiry don't stop a *view*, only a second decision). Sensitive
