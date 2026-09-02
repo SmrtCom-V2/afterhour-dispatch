@@ -96,7 +96,7 @@ export function Zone3Detail({ data, strings, forceOpen }) {
               history.map((h) => (
                 <Row
                   key={h.id}
-                  label={new Date(h.created_at).toLocaleDateString('en-GB')}
+                  label={new Date(h.created_at).toLocaleDateString(strings.lang === 'de' ? 'de-DE' : 'en-GB')}
                   value={
                     `${(h.issue_category || '').replace(/_/g, ' ')}` +
                     (h.night_outcome && strings.outcomeLabel[h.night_outcome]

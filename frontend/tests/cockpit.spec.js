@@ -222,6 +222,22 @@ test('forward view — no access codes on the page', async ({ page }) => {
   expect(body.toLowerCase()).not.toContain('janitor');
 });
 
+test('German call renders the cockpit in German', async ({ page }) => {
+  const p = incidentPayload();
+  p.incident.callLanguage = 'de';
+  await mockCockpit(page, p);
+  await page.goto(`/cockpit/${TOKEN}`);
+
+  await expect(page.getByText('NOTFALL', { exact: true })).toBeVisible();
+  await expect(page.getByText(/Empfehlung: Dienstleister jetzt schicken/)).toBeVisible();
+  await expect(page.getByText(/Anrufer verifiziert: Thomas Bauer/)).toBeVisible();
+  await expect(page.getByText(/Automatischer Einsatz in/).first()).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Dienstleister schicken' })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Zuerst den Mieter zurückrufen/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Sichere Zusammenfassung weiterleiten/ })).toBeVisible();
+  await page.screenshot({ path: 'qa-evidence-2026-09-02/cockpit-04-german.png', fullPage: true });
+});
+
 test('mobile viewport — no horizontal scroll', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await mockCockpit(page, incidentPayload());
