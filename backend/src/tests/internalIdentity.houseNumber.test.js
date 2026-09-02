@@ -7,7 +7,10 @@
 // building_not_managed hard-stop, regardless of street-name match quality.
 // This file locks in: (1) the bug reproduces on the pre-fix math shape, and
 // (2) normalizeSpokenNumbers() fixes it for both English and German callers.
-import { normalizeSpokenNumbers, extractHouseNumber, buildingScore } from '../routes/internalIdentity.js';
+import {
+  normalizeSpokenNumbers, extractHouseNumber, buildingScore,
+  collapseDigitRuns, collapseLetterRuns, extractStreetToken, soundex,
+} from '../routes/internalIdentity.js';
 
 describe('normalizeSpokenNumbers', () => {
   it('converts English number words 1-99 to numerals', () => {
@@ -119,5 +122,102 @@ describe('normalizeName — spoken lead-in phrases', () => {
   });
   it('a plain bare name is unaffected', () => {
     expect(similarity('Thomas Bauer', 'Thomas Bauer')).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// STT-garbled street-name matching (2026-09-02). Real call transcripts: a
+// caller saying "Torstraße 99, Berlin" had Deepgram deliver "tolstock at
+// ninety nine in berlin" / "por street ninety nine" / "T o r s t r". The old
+// whole-string Levenshtein buildingScore hard-rejected them (state
+// building_not_managed, score < 0.5). Fix: digit-run + letter-run collapse in
+// normalizeSpokenNumbers, street-token extraction + Dice/prefix fuzzy match in
+// buildingScore, Soundex fallback in similarity.
+// ---------------------------------------------------------------------------
+describe('collapseDigitRuns — digit-by-digit spoken numbers', () => {
+  it('merges 2+ consecutive single-digit words into one numeral', () => {
+    expect(collapseDigitRuns('nine nine')).toBe('99');
+    expect(collapseDigitRuns('one zero one one five')).toBe('10115');
+    expect(collapseDigitRuns('oh nine nine')).toBe('099');
+  });
+  it('does NOT merge a lone digit word or a digit word + non-digit', () => {
+    expect(collapseDigitRuns('call in nine minutes')).toBe('call in nine minutes');
+    expect(collapseDigitRuns('nine')).toBe('nine');
+  });
+  it('handles German single digits', () => {
+    expect(collapseDigitRuns('eins null eins eins fünf')).toBe('10115');
+  });
+});
+
+describe('collapseLetterRuns — letter-spelled streets', () => {
+  it('collapses a run of 3+ single letters into a word', () => {
+    expect(collapseLetterRuns('T o r s t r')).toBe('Torstr');
+    expect(collapseLetterRuns('t o r s t r a s s e 99')).toBe('torstrasse 99');
+  });
+  it('leaves 2-letter initials alone', () => {
+    expect(collapseLetterRuns('J P Morgan')).toBe('J P Morgan');
+  });
+});
+
+describe('normalizeSpokenNumbers — combined garble handling', () => {
+  it('"tolstock at ninety nine in berlin" -> house number 99 extractable', () => {
+    expect(extractHouseNumber('tolstock at ninety nine in berlin')).toBe('99');
+  });
+  it('"por street nine nine" -> 99', () => {
+    expect(extractHouseNumber('por street nine nine')).toBe('99');
+  });
+  it('"T o r s t r a s s e 99" collapses the letter run', () => {
+    expect(normalizeSpokenNumbers('T o r s t r a s s e 99')).toMatch(/torstrasse 99/i);
+  });
+});
+
+describe('extractStreetToken', () => {
+  it('pulls the suffixed street token out of a garbled address', () => {
+    expect(extractStreetToken('Torstr 99')).toBe('torstr');
+    expect(extractStreetToken('torstrasse 99 berlin')).toBe('torstrasse');
+    expect(extractStreetToken('Hauptstraße 10')).toBe('hauptstrasse');
+  });
+  it('falls back to the longest non-stopword token when no suffix present', () => {
+    expect(extractStreetToken('tolstock at ninety nine in berlin')).toBe('tolstock');
+  });
+});
+
+describe('buildingScore — STT-garbled street names clear the 0.5 gate', () => {
+  it('"tolstock at ninety nine in berlin" vs "Torstr 99" -> MATCH (>= 0.5)', () => {
+    expect(buildingScore('tolstock at ninety nine in berlin', 'Torstr 99')).toBeGreaterThanOrEqual(0.5);
+  });
+  it('"por street ninety nine" vs "Torstr 99" -> not hard-rejected (>= 0.5)', () => {
+    expect(buildingScore('por street ninety nine', 'Torstr 99')).toBeGreaterThanOrEqual(0.5);
+  });
+  it('"torstrasse 99 berlin" vs "Torstr 99" -> STRONG (>= 0.7)', () => {
+    expect(buildingScore('torstrasse 99 berlin', 'Torstr 99')).toBeGreaterThanOrEqual(0.7);
+  });
+  it('"T o r s t r a s s e 99" vs "Torstr 99" -> >= 0.6 after letter-collapse', () => {
+    expect(buildingScore('T o r s t r a s s e 99', 'Torstr 99')).toBeGreaterThanOrEqual(0.6);
+  });
+  it('"hauptstraße zehn berlin" vs "Hauptstraße 10" -> POC tenant still verifies (>= 0.8)', () => {
+    expect(buildingScore('hauptstraße zehn berlin', 'Hauptstraße 10')).toBeGreaterThanOrEqual(0.8);
+  });
+});
+
+describe('buildingScore — genuine non-matches still rejected (no false positives)', () => {
+  it('"kantstraße fünf" vs "Torstr 99" -> < 0.5', () => {
+    expect(buildingScore('kantstraße fünf', 'Torstr 99')).toBeLessThan(0.5);
+  });
+  it('different street, SAME house number does NOT clear the gate on the number alone', () => {
+    expect(buildingScore('bergmannstraße 99', 'Torstr 99')).toBeLessThan(0.5);
+    expect(buildingScore('kantstraße 99', 'Torstr 99')).toBeLessThan(0.5);
+  });
+});
+
+describe('soundex — surname phonetic fallback', () => {
+  it('"Dahmer" and "Dummer" share a Soundex code', () => {
+    expect(soundex('Dahmer')).toBe(soundex('Dummer'));
+  });
+  it('similarity("Jeffrey Dahmer","Jeffrey Dummer") clears the 0.55 unverified threshold', () => {
+    expect(similarity('Jeffrey Dahmer', 'Jeffrey Dummer')).toBeGreaterThanOrEqual(0.55);
+  });
+  it('a phonetically-close surname with a WRONG given name stays low', () => {
+    expect(similarity('Thomas Dahmer', 'Jeffrey Dummer')).toBeLessThan(0.55);
   });
 });
