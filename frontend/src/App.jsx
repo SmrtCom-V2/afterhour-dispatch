@@ -22,6 +22,7 @@ import { Employees } from './pages/Employees';
 import { Settings } from './pages/Settings';
 import { SpReportSubmit } from './pages/SpReportSubmit';
 import { Cockpit } from './pages/Cockpit';
+import { CockpitForwardView } from './pages/CockpitForwardView';
 import { Impressum } from './pages/legal/Impressum';
 import { Datenschutz } from './pages/legal/Datenschutz';
 import { Terms } from './pages/legal/Terms';
@@ -127,6 +128,7 @@ function AppRoutes() {
       <Route path="/reset-password" element={user ? <Navigate to="/" /> : <ResetPassword />} />
       <Route path="/verify-email" element={<VerifyEmail />} />
       <Route path="/report/:token" element={<SpReportSubmit />} />
+      <Route path="/cockpit/forward/:token" element={<CockpitForwardView />} />
       <Route path="/cockpit/:token" element={<Cockpit />} />
       <Route path="/impressum" element={<Impressum />} />
       <Route path="/privacy" element={<Datenschutz />} />

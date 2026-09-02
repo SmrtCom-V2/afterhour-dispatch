@@ -315,6 +315,10 @@ router.get('/:token', async (req, res) => {
         aiUrgency: incident.ai_urgency,
         classificationReason: incident.classification_reason,
         verificationStatus: incident.verification_status,
+        // The cockpit renders in the language the CALL happened in (English
+        // default until the German path ships). Not a UI toggle — the on-call
+        // person is not a logged-in user with a saved preference.
+        callLanguage: incident.language || 'en',
         createdAt: incident.created_at,
         failsafeAt,
         decision: incident.decision,
