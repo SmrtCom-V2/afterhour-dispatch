@@ -132,12 +132,43 @@ app.use(cors({
 }));
 
 // Rate limiting
+//
+// The internal service-to-service endpoints (/api/internal/*) are called by the
+// voice brain — a separate process — several times per phone call, and are
+// already auth-gated by the INTERNAL_NOTIFY_TOKEN shared secret (fail-closed if
+// unset). Two concurrent calls or a test harness can burst past the public
+// 100/15min bucket, and a transient 429 makes the brain see result.state =
+// undefined -> the hard gate rejects a real verified tenant mid-emergency.
+// So: the public limiter SKIPS requests that carry a valid internal token, and
+// /api/internal gets its own much larger bucket (still abuse-bounded, just
+// sized for machine traffic).
+const hasValidInternalToken = (req) => {
+  const expected = process.env.INTERNAL_NOTIFY_TOKEN;
+  return Boolean(expected) && req.get('X-Internal-Token') === expected;
+};
+
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: config.nodeEnv === 'development' ? 1000 : 100, // Higher limit in dev
   message: { error: 'Too many requests, please try again later' },
+  skip: hasValidInternalToken,
 });
 app.use('/api/', limiter);
+
+// Dedicated limiter for internal service-to-service traffic. Sized for the
+// voice brain's per-call request pattern (identify-by-phone, identify-by-name-
+// address, upsert-ticket, notify-operator, bind-phone — multiple times across a
+// call, times concurrent calls on a busy night). A valid token also skips this
+// one; it only exists to bound damage if the token ever leaks. Mounted before
+// the internal routers below.
+const internalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: config.nodeEnv === 'development' ? 10000 : 2000,
+  message: { error: 'Too many internal requests' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: hasValidInternalToken,
+});
 
 // Stricter limiter for credential/account-abuse endpoints (login,
 // password reset, registration/email-check) — the shared limiter above
@@ -193,6 +224,7 @@ app.use('/api/telephony', authenticateToken, requireActiveSubscription, telephon
 app.use('/api/sp-report', spReportRoutes);
 app.use('/api/webhooks', webhooksRoutes);
 // Internal service-to-service only — own auth (shared secret) inside the route file, not session/JWT.
+app.use('/api/internal', internalLimiter);
 app.use('/api/internal', internalNotifyRoutes);
 app.use('/api/internal', internalIdentityRoutes);
 app.use('/api/cockpit', cockpitRoutes);
