@@ -222,20 +222,21 @@ test('forward view — no access codes on the page', async ({ page }) => {
   expect(body.toLowerCase()).not.toContain('janitor');
 });
 
-test('German call renders the cockpit in German', async ({ page }) => {
+test('English only for now — a de call still renders English', async ({ page }) => {
+  // The German locale is built + tested (cockpitStrings.test.js) but the
+  // cockpit is pinned to English until the full German pass. Even a call
+  // flagged `de` must render English chrome.
   const p = incidentPayload();
   p.incident.callLanguage = 'de';
   await mockCockpit(page, p);
   await page.goto(`/cockpit/${TOKEN}`);
 
-  await expect(page.getByText('NOTFALL', { exact: true })).toBeVisible();
-  await expect(page.getByText(/Empfehlung: Dienstleister jetzt schicken/)).toBeVisible();
-  await expect(page.getByText(/Anrufer verifiziert: Thomas Bauer/)).toBeVisible();
-  await expect(page.getByText(/Automatischer Einsatz in/).first()).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Dienstleister schicken' })).toBeVisible();
-  await expect(page.getByRole('button', { name: /Zuerst den Mieter zurückrufen/ })).toBeVisible();
-  await expect(page.getByRole('button', { name: /Sichere Zusammenfassung weiterleiten/ })).toBeVisible();
-  await page.screenshot({ path: 'qa-evidence-2026-09-02/cockpit-04-german.png', fullPage: true });
+  await expect(page.getByText('EMERGENCY', { exact: true })).toBeVisible();
+  await expect(page.getByText(/Recommended: send a service provider now/)).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Send a service provider' })).toBeVisible();
+  // no German chrome leaked through
+  await expect(page.getByText('NOTFALL', { exact: true })).toHaveCount(0);
+  await expect(page.getByText(/Dienstleister schicken/)).toHaveCount(0);
 });
 
 test('mobile viewport — no horizontal scroll', async ({ page }) => {

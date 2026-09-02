@@ -35,7 +35,12 @@ export function Cockpit() {
   const [outcomeNote, setOutcomeNote] = useState('');
   const [callbackCount, setCallbackCount] = useState(0);
 
-  const lang = data?.incident?.callLanguage || 'en';
+  // English only for now (Ron, 2026-09-02). The German locale is built and
+  // tested but stays dormant until the full German pass — verify the voice
+  // brain writes the AI brief in German, native the `de` strings, German
+  // category labels, the forward view. Flip this back to
+  // `data?.incident?.callLanguage || 'en'` when that pass is done.
+  const lang = 'en';
   const strings = getStrings(lang);
 
   const decide = useCallback(
