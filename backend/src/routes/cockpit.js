@@ -1,21 +1,40 @@
 /**
- * Decision Cockpit routes — Night Ops HITL, see NIGHT_OPS_MASTER_PLAN.md §4.3.
+ * Decision Cockpit routes — Night Ops HITL, see NIGHT_OPS_MASTER_PLAN.md §4.3
+ * and AFTERHOUR_ONCALL_COCKPIT_DECISION_FUNNEL_REBUILD_2026-09-02.md.
  *
  * Token-authenticated (the token IS the auth — no JWT/login), single-use per
  * decision, scoped to one incident. Deliberately NOT mounted under /api/auth
  * or behind authenticateToken: a half-asleep on-call person following an SMS
  * link must not have to log in.
+ *
+ * Decision actions (POST /:token/decision):
+ *   send_company         → decision=emergency_dispatch, system runs the SP call loop
+ *   send_company_manual  → decision=emergency_dispatch, on-call person phones the SP
+ *                          themselves; we only record it + issue the report token
+ *   owner_on_site        → decision=not_emergency, on-call person handles it
+ *   escalate_fm          → decision=escalated_to_fm_by_human, rings the FM on-call
+ *   defer_morning        → decision=not_emergency, waits until the office opens
+ *   callback_tenant      → NOT a decision — decision stays 'pending', T+10 fail-safe
+ *                          stays armed. Bumps callback_count, returns and lets the
+ *                          human call the tenant, then come back and decide.
  */
 import express from 'express';
+import crypto from 'crypto';
 import { db } from '../db/index.js';
 import { logger } from '../utils/logger.js';
-import { startDispatch } from '../services/dispatch.js';
+import { startDispatch, recordManualDispatch } from '../services/dispatch.js';
 import { determineRequiredTrade } from '../services/tradeMapping.js';
+import { notifyHuman } from '../services/notificationChannel.js';
 import { GuidedQuestions } from '../providers/voiceai/index.js';
 import { decryptBuildingCodes } from './buildings.js';
 import { decryptPiiFields } from '../utils/piiCrypto.js';
 
 const router = express.Router();
+
+// The T+10 fail-safe (wakeupEngine.js) auto-dispatches if nobody has decided
+// 10 minutes after incident.created_at. The cockpit shows a live countdown to
+// this so the on-call person knows the clock is running.
+const FAILSAFE_MINUTES = 10;
 
 /**
  * Labels raw guided_answers ({problem: "...", danger_type: "..."}) with the
@@ -28,6 +47,41 @@ function labelGuidedAnswers(guidedAnswers, language) {
   return questions
     .filter((q) => guidedAnswers[q.id] !== undefined)
     .map((q) => ({ question: q.question, answer: guidedAnswers[q.id] }));
+}
+
+/**
+ * Is a service provider reachable right now? Computed server-side against
+ * Europe/Berlin wall-clock so the on-call person (often not a trades pro)
+ * doesn't call a "business hours only" contractor at 2am.
+ * Returns 'always' | 'open' | 'closed'.
+ */
+function spOpenNow(sp, now = new Date()) {
+  if (sp.available_24h) return 'always';
+  if (!sp.available_from || !sp.available_to) return 'always'; // unset window = assume reachable
+  const berlin = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Berlin' }));
+  const mins = berlin.getHours() * 60 + berlin.getMinutes();
+  const [fh, fm] = String(sp.available_from).split(':').map(Number);
+  const [th, tm] = String(sp.available_to).split(':').map(Number);
+  const from = fh * 60 + fm;
+  const to = th * 60 + tm;
+  const openNow = from <= to ? (mins >= from && mins < to) : (mins >= from || mins < to); // handle overnight window
+  return openNow ? 'open' : 'closed';
+}
+
+function shapeSp(sp) {
+  if (!sp) return null;
+  return {
+    id: sp.id,
+    companyName: sp.company_name,
+    trade: sp.trade,
+    phone: sp.phone,
+    priority: sp.priority ?? null,
+    usageNote: sp.usage_note || null,
+    available24h: sp.available_24h ?? true,
+    availableFrom: sp.available_from || null,
+    availableTo: sp.available_to || null,
+    openNow: spOpenNow(sp),
+  };
 }
 
 async function loadTokenContext(token) {
@@ -46,8 +100,86 @@ async function loadTokenContext(token) {
 }
 
 /**
- * GET /api/cockpit/:token — full incident context for section A-D of the
- * cockpit page (What happened / Where / History / Suggested company).
+ * GET /api/cockpit/forward/:token — the code-stripped read-only view.
+ * NO building access codes, NO janitor phone, NO special access instructions.
+ *
+ * MUST be declared before GET /:token or Express matches "forward" as a token.
+ */
+router.get('/forward/:token', async (req, res) => {
+  try {
+    const linkResult = await db.query(
+      `SELECT id, incident_id, expires_at FROM cockpit_forward_link WHERE token = $1`,
+      [req.params.token],
+    );
+    if (linkResult.rows.length === 0) return res.status(404).json({ error: 'not_found' });
+    const link = linkResult.rows[0];
+    if (new Date(link.expires_at) < new Date()) return res.status(410).json({ error: 'expired' });
+
+    await db.query(
+      `UPDATE cockpit_forward_link SET opened_at = COALESCE(opened_at, NOW()) WHERE id = $1`,
+      [link.id],
+    );
+
+    const incidentResult = await db.query(
+      `SELECT i.id, i.issue_category, i.issue_description, i.created_at,
+              b.name as building_name, b.address as building_address,
+              c.transcript
+       FROM incident i
+       LEFT JOIN building b ON i.building_id = b.id
+       LEFT JOIN call c ON i.call_id = c.id
+       WHERE i.id = $1`,
+      [link.incident_id],
+    );
+    if (incidentResult.rows.length === 0) return res.status(404).json({ error: 'incident_not_found' });
+    const incident = incidentResult.rows[0];
+
+    const briefRow = await db.query(
+      `SELECT event_data FROM incident_timeline
+       WHERE incident_id = $1 AND event_type = 'ai_incident_summary'
+       ORDER BY created_at DESC LIMIT 1`,
+      [link.incident_id],
+    );
+    const aiBrief = briefRow.rows[0]?.event_data || null;
+
+    await db.query(
+      `INSERT INTO incident_timeline (incident_id, event_type, event_data)
+       VALUES ($1, 'cockpit.forward_opened', $2)`,
+      [link.incident_id, JSON.stringify({})],
+    );
+
+    const requiredTrade = determineRequiredTrade(incident.issue_category);
+
+    // Deliberately minimal — this is a link that may leave the building.
+    res.json({
+      incident: {
+        category: incident.issue_category,
+        description: incident.issue_description,
+        createdAt: incident.created_at,
+        transcript: incident.transcript,
+        aiBrief: aiBrief
+          ? {
+              headline: aiBrief.headline,
+              reported: aiBrief.reported,
+              story_summary: aiBrief.story_summary,
+              qa: aiBrief.qa,
+              emergency_assessment: aiBrief.emergency_assessment,
+              suggested_actions: aiBrief.suggested_actions,
+              narrative: aiBrief.narrative,
+            }
+          : null,
+      },
+      building: { name: incident.building_name, address: incident.building_address },
+      requiredTrade,
+    });
+  } catch (error) {
+    logger.error('cockpit forward view error', { error: error.message });
+    res.status(500).json({ error: 'server_error' });
+  }
+});
+
+/**
+ * GET /api/cockpit/:token — full incident context for the decision funnel:
+ *   Zone 1 verdict · Zone 2 the 20-second read · Zone 3 detail · Zone 4 decide.
  */
 router.get('/:token', async (req, res) => {
   try {
@@ -63,19 +195,23 @@ router.get('/:token', async (req, res) => {
 
     const incidentResult = await db.query(
       `SELECT i.id, i.issue_category, i.issue_description, i.ai_confidence, i.ai_urgency,
-              i.classification_reason,
+              i.classification_reason, i.verification_status,
               i.tenant_name_given, i.tenant_phone_given, i.created_at, i.guided_answers,
               i.decision, i.night_outcome, i.decided_by_person, i.override_reason,
+              i.dispatch_mode, i.callback_count,
               b.id as building_id, b.name as building_name, b.address as building_address,
               b.water_shutoff_location, b.gas_shutoff_location, b.electric_shutoff_location,
               b.key_safe_location, b.key_safe_code, b.gate_code, b.main_entrance_code,
               b.special_access_instructions, b.janitor_name, b.janitor_phone,
               t.name as tenant_name, t.phone as tenant_phone,
-              c.transcript, c.language, c.caller_phone
+              c.transcript, c.language, c.caller_phone,
+              fm.fm_oncall_name, fm.fm_oncall_phone
        FROM incident i
        LEFT JOIN building b ON i.building_id = b.id
        LEFT JOIN tenant t ON i.tenant_id = t.id
        LEFT JOIN call c ON i.call_id = c.id
+       LEFT JOIN pm_company pm ON b.pm_company_id = pm.id
+       LEFT JOIN fm_company fm ON pm.fm_company_id = fm.id
        WHERE i.id = $1`,
       [tokenRow.incident_id],
     );
@@ -94,6 +230,16 @@ router.get('/:token', async (req, res) => {
       [incident.building_id, incident.id],
     );
 
+    // Recurring-pattern signal for Zone 2 ("3rd water issue here this month").
+    const recurring = await db.query(
+      `SELECT
+         COUNT(*)::int AS count,
+         COUNT(*) FILTER (WHERE issue_category = $3)::int AS same_category_count
+       FROM incident
+       WHERE building_id = $1 AND id != $2 AND created_at > NOW() - INTERVAL '30 days'`,
+      [incident.building_id, incident.id, incident.issue_category],
+    );
+
     // Suggested company: priority-1 active SP for this building+trade,
     // fallback 'general', plus the full list for override (Night Ops §5 —
     // Phase 1 anti-collusion is the audit trail, not routing cleverness).
@@ -110,25 +256,6 @@ router.get('/:token', async (req, res) => {
 
     const suggested = spList.rows.find((sp) => sp.trade === requiredTrade) || spList.rows[0] || null;
 
-    // Explicit suggested-action label (gap found in the 2026-08-30 cockpit
-    // UX review — the badge color implied an action but never said it in
-    // words, forcing a half-asleep human to infer "red = send someone" for
-    // themselves). Same derivation the frontend used to do ad hoc for
-    // AI_IMPLIED_ACTION, now computed once, server-side, from the real
-    // decision/ai_urgency fields so frontend and backend can't drift apart.
-    const suggestedAction =
-      incident.decision === 'emergency_dispatch' || incident.ai_urgency === 'critical'
-        ? 'send_company'
-        : incident.decision === 'not_emergency' || incident.ai_urgency === 'low'
-        ? 'defer_morning'
-        : null; // unclear/urgent: no single suggested action, human must read and decide
-
-    // Other wake-up attempts so far, for "already handled by X" display.
-    const wakeups = await db.query(
-      `SELECT stage, channel, result, created_at FROM wakeup_attempt WHERE incident_id = $1 ORDER BY created_at`,
-      [incident.id],
-    );
-
     // The AI's post-call brief (headline, what was reported, the Q&A, the
     // emergency read incl. "unsure", suggested actions). Written by the voice
     // brain's generateIncidentSummary() to incident_timeline right after the
@@ -141,6 +268,31 @@ router.get('/:token', async (req, res) => {
       [incident.id],
     );
     const aiBrief = briefRow.rows[0]?.event_data || null;
+
+    // Explicit suggested-action label (gap found in the 2026-08-30 cockpit
+    // UX review — the badge color implied an action but never said it in
+    // words). Computed once, server-side. Falls back to the AI brief's own
+    // emergency read for incidents where ai_urgency was never written (the
+    // live voice-brain-direct-twilio-poc path only writes decision/
+    // ai_confidence, not ai_urgency — see the urgencyKeyFor comment on the
+    // frontend). 'unsure' → no suggested action, the human must read and decide.
+    const briefEmergency = aiBrief?.emergency_assessment?.is_emergency;
+    const suggestedAction =
+      incident.decision === 'emergency_dispatch' ||
+      incident.ai_urgency === 'critical' ||
+      briefEmergency === 'yes'
+        ? 'send_company'
+        : incident.decision === 'not_emergency' ||
+          incident.ai_urgency === 'low' ||
+          briefEmergency === 'no'
+        ? 'defer_morning'
+        : null;
+
+    // Other wake-up attempts so far, for "already handled by X" display.
+    const wakeups = await db.query(
+      `SELECT stage, channel, result, created_at FROM wakeup_attempt WHERE incident_id = $1 ORDER BY created_at`,
+      [incident.id],
+    );
 
     // Security: cockpit links can be forwarded (single-use-per-decision and
     // 12h expiry don't stop a *view*, only a second decision). Sensitive
@@ -159,6 +311,10 @@ router.get('/:token', async (req, res) => {
       );
     }
 
+    const failsafeAt = new Date(
+      new Date(incident.created_at).getTime() + FAILSAFE_MINUTES * 60 * 1000,
+    ).toISOString();
+
     res.json({
       incident: {
         id: incident.id,
@@ -167,18 +323,29 @@ router.get('/:token', async (req, res) => {
         aiConfidence: incident.ai_confidence,
         aiUrgency: incident.ai_urgency,
         classificationReason: incident.classification_reason,
+        verificationStatus: incident.verification_status,
+        // The cockpit renders in the language the CALL happened in (English
+        // default until the German path ships). Not a UI toggle — the on-call
+        // person is not a logged-in user with a saved preference.
+        callLanguage: incident.language || 'en',
         createdAt: incident.created_at,
+        failsafeAt,
         decision: incident.decision,
         nightOutcome: incident.night_outcome,
+        dispatchMode: incident.dispatch_mode,
+        callbackCount: incident.callback_count ?? 0,
         decidedByPerson: incident.decided_by_person,
         overrideReason: incident.override_reason,
         transcript: incident.transcript,
         guidedAnswers: labelGuidedAnswers(incident.guided_answers, incident.language),
         aiBrief,
+        aiBriefMissing: !aiBrief,
       },
       caller: {
         name: incident.tenant_name || incident.tenant_name_given,
         phone: incident.tenant_phone || incident.tenant_phone_given || incident.caller_phone,
+        nameGiven: incident.tenant_name_given,
+        nameOnFile: incident.tenant_name,
       },
       building: {
         id: incident.building_id,
@@ -196,11 +363,18 @@ router.get('/:token', async (req, res) => {
         janitorPhone: incident.janitor_phone,
       },
       history: history.rows,
+      recurringPattern: {
+        count: recurring.rows[0]?.count ?? 0,
+        sameCategoryCount: recurring.rows[0]?.same_category_count ?? 0,
+      },
       requiredTrade,
       suggestedAction,
-      suggestedCompany: suggested,
-      allCompanies: spList.rows,
+      suggestedCompany: shapeSp(suggested),
+      allCompanies: spList.rows.map(shapeSp),
       wakeupAttempts: wakeups.rows,
+      fmOnCall: incident.fm_oncall_phone
+        ? { name: incident.fm_oncall_name || null, phone: incident.fm_oncall_phone }
+        : null,
       viewer: { role: tokenRow.role, name: tokenRow.person_name },
       alreadyDecided: incident.decision !== 'pending',
     });
@@ -210,11 +384,25 @@ router.get('/:token', async (req, res) => {
   }
 });
 
+const VALID_OVERRIDE_REASONS = [
+  'ai_missed_a_fact',
+  'ai_misjudged_severity',
+  'caller_gave_more_info_after_call',
+  'tier_right_tone_off',
+  'other',
+];
+
+// Actions that resolve the incident (win the T+0..T+10 race). callback_tenant
+// is deliberately absent — it is a holding action, not a decision.
+const RESOLVING_ACTIONS = ['send_company', 'send_company_manual', 'owner_on_site', 'escalate_fm', 'defer_morning'];
+
 /**
- * POST /api/cockpit/:token/decision — buttons B1 (send company) / B2 (I'll
- * go myself) / B3 (can wait until morning). Race-safe: the UPDATE's
- * `WHERE decision = 'pending'` means only the first request to land wins;
- * the second gets rowCount 0 and is told someone already decided.
+ * POST /api/cockpit/:token/decision
+ *
+ * Race-safe for the resolving actions: the UPDATE's `WHERE decision = 'pending'`
+ * means only the first request to land wins; the second gets rowCount 0 and is
+ * told someone already decided. callback_tenant takes a separate, non-racing
+ * path — it never touches `decision`.
  */
 router.post('/:token/decision', async (req, res) => {
   try {
@@ -222,24 +410,66 @@ router.post('/:token/decision', async (req, res) => {
     if (error === 'not_found') return res.status(404).json({ error: 'not_found' });
     if (error === 'expired') return res.status(410).json({ error: 'expired' });
 
-    const { action, chosenSpId, deferReason, overrideReason } = req.body;
-    if (!['send_company', 'owner_on_site', 'defer_morning'].includes(action)) {
+    const { action, chosenSpId, overrideReason } = req.body;
+    if (![...RESOLVING_ACTIONS, 'callback_tenant'].includes(action)) {
       return res.status(400).json({ error: 'invalid_action' });
     }
-    const VALID_OVERRIDE_REASONS = ['ai_missed_a_fact', 'ai_misjudged_severity', 'caller_gave_more_info_after_call', 'tier_right_tone_off', 'other'];
     if (overrideReason !== undefined && overrideReason !== null && !VALID_OVERRIDE_REASONS.includes(overrideReason)) {
       return res.status(400).json({ error: 'invalid_override_reason' });
     }
 
-    const incidentResult = await db.query('SELECT building_id, issue_category, decision FROM incident WHERE id = $1', [
-      tokenRow.incident_id,
-    ]);
+    const incidentResult = await db.query(
+      `SELECT i.building_id, i.issue_category, i.decision, i.callback_count,
+              fm.fm_oncall_name, fm.fm_oncall_phone
+       FROM incident i
+       LEFT JOIN building b ON i.building_id = b.id
+       LEFT JOIN pm_company pm ON b.pm_company_id = pm.id
+       LEFT JOIN fm_company fm ON pm.fm_company_id = fm.id
+       WHERE i.id = $1`,
+      [tokenRow.incident_id],
+    );
     if (incidentResult.rows.length === 0) return res.status(404).json({ error: 'incident_not_found' });
     const incident = incidentResult.rows[0];
+    const decidedBy = tokenRow.person_name || tokenRow.phone;
 
+    // ---- Holding action: call the tenant back first ------------------------
+    // Does NOT resolve the incident. decision stays 'pending', the T+10
+    // fail-safe stays armed. We just record it and let the human make the call.
+    if (action === 'callback_tenant') {
+      const upd = await db.query(
+        `UPDATE incident SET callback_count = COALESCE(callback_count, 0) + 1
+         WHERE id = $1 AND decision = 'pending'
+         RETURNING callback_count`,
+        [tokenRow.incident_id],
+      );
+      if (upd.rowCount === 0) {
+        const already = await db.query(
+          'SELECT decided_by_person, night_outcome FROM incident WHERE id = $1',
+          [tokenRow.incident_id],
+        );
+        return res.status(409).json({
+          error: 'already_decided',
+          decidedByPerson: already.rows[0]?.decided_by_person,
+          nightOutcome: already.rows[0]?.night_outcome,
+        });
+      }
+      await db.query(
+        `INSERT INTO incident_timeline (incident_id, event_type, event_data)
+         VALUES ($1, 'cockpit.callback', $2)`,
+        [tokenRow.incident_id, JSON.stringify({ by: decidedBy, role: tokenRow.role })],
+      );
+      return res.json({ ok: true, action, callbackCount: upd.rows[0].callback_count });
+    }
+
+    // ---- Escalate to FM: need someone to escalate to ---------------------
+    if (action === 'escalate_fm' && !incident.fm_oncall_phone) {
+      return res.status(422).json({ error: 'no_fm_oncall_configured' });
+    }
+
+    // ---- Resolving actions ----------------------------------------------
     const requiredTrade = determineRequiredTrade(incident.issue_category);
     let suggestedSpId = null;
-    if (action === 'send_company') {
+    if (action === 'send_company' || action === 'send_company_manual') {
       const suggestion = await db.query(
         `SELECT sp.id FROM service_provider sp
          JOIN building_service_provider bsp ON sp.id = bsp.service_provider_id
@@ -250,33 +480,56 @@ router.post('/:token/decision', async (req, res) => {
       suggestedSpId = suggestion.rows[0]?.id || null;
     }
 
-    const nightOutcome =
-      action === 'send_company' ? 'dispatched' : action === 'owner_on_site' ? 'owner_on_site' : 'deferred_morning';
+    const decisionValue = {
+      send_company: 'emergency_dispatch',
+      send_company_manual: 'emergency_dispatch',
+      owner_on_site: 'not_emergency',
+      escalate_fm: 'escalated_to_fm_by_human',
+      defer_morning: 'not_emergency',
+    }[action];
+
+    const nightOutcome = {
+      send_company: 'dispatched',
+      send_company_manual: 'dispatched_manual',
+      owner_on_site: 'owner_on_site',
+      escalate_fm: 'escalated_to_fm',
+      defer_morning: 'deferred_morning',
+    }[action];
+
+    const dispatchMode =
+      action === 'send_company' ? 'auto' : action === 'send_company_manual' ? 'manual' : null;
+
+    const chosenSp =
+      action === 'send_company' || action === 'send_company_manual'
+        ? chosenSpId || suggestedSpId
+        : null;
 
     // Race-safe: only succeeds if still 'pending'. This is the single write
     // that resolves the T+0..T+10 wake-up race between primary/backup.
     const updateResult = await db.query(
       `UPDATE incident
        SET decision = $1, decision_at = NOW(), decided_by_person = $2, decided_via = 'cockpit',
-           suggested_sp_id = $3, chosen_sp_id = $4, night_outcome = $5, override_reason = $6
-       WHERE id = $7 AND decision = 'pending'
+           suggested_sp_id = $3, chosen_sp_id = $4, night_outcome = $5, override_reason = $6,
+           dispatch_mode = $7
+       WHERE id = $8 AND decision = 'pending'
        RETURNING id`,
       [
-        action === 'send_company' ? 'emergency_dispatch' : 'not_emergency',
-        tokenRow.person_name || tokenRow.phone,
+        decisionValue,
+        decidedBy,
         suggestedSpId,
-        action === 'send_company' ? chosenSpId || suggestedSpId : null,
+        chosenSp,
         nightOutcome,
         overrideReason || null,
+        dispatchMode,
         tokenRow.incident_id,
       ],
     );
 
     if (updateResult.rowCount === 0) {
-      // Someone else already decided — tell the caller who and what.
-      const already = await db.query('SELECT decided_by_person, night_outcome FROM incident WHERE id = $1', [
-        tokenRow.incident_id,
-      ]);
+      const already = await db.query(
+        'SELECT decided_by_person, night_outcome FROM incident WHERE id = $1',
+        [tokenRow.incident_id],
+      );
       return res.status(409).json({
         error: 'already_decided',
         decidedByPerson: already.rows[0]?.decided_by_person,
@@ -284,8 +537,7 @@ router.post('/:token/decision', async (req, res) => {
       });
     }
 
-    // Mark THIS token used_at — it's the one that won the decision race
-    // (the UPDATE above already gated that with `WHERE decision = 'pending'`).
+    // Mark THIS token used_at — it's the one that won the decision race.
     // escalateToFM's "ring the actual decider" lookup depends on this.
     await db.query(`UPDATE cockpit_token SET used_at = NOW() WHERE id = $1`, [tokenRow.id]);
 
@@ -294,13 +546,50 @@ router.post('/:token/decision', async (req, res) => {
        VALUES ($1, 'cockpit.decision', $2)`,
       [
         tokenRow.incident_id,
-        JSON.stringify({ action, decidedBy: tokenRow.person_name || tokenRow.phone, role: tokenRow.role, chosenSpId, overrideReason: overrideReason || null }),
+        JSON.stringify({
+          action,
+          decidedBy,
+          role: tokenRow.role,
+          chosenSpId: chosenSp,
+          dispatchMode,
+          overrideReason: overrideReason || null,
+        }),
       ],
     );
 
+    // Side effects per action.
     if (action === 'send_company') {
-      startDispatch(tokenRow.incident_id, requiredTrade, chosenSpId || null).catch((err) =>
-        logger.error('cockpit-triggered startDispatch failed', { incidentId: tokenRow.incident_id, error: err.message }),
+      startDispatch(tokenRow.incident_id, requiredTrade, chosenSp || null).catch((err) =>
+        logger.error('cockpit-triggered startDispatch failed', {
+          incidentId: tokenRow.incident_id,
+          error: err.message,
+        }),
+      );
+    } else if (action === 'send_company_manual') {
+      // The human is phoning the SP themselves — don't run the call loop, but
+      // still issue the report token + "no report = no payment" SMS so the
+      // accountability loop is identical to an auto-dispatch.
+      recordManualDispatch(tokenRow.incident_id, chosenSp || null, decidedBy).catch((err) =>
+        logger.error('cockpit recordManualDispatch failed', {
+          incidentId: tokenRow.incident_id,
+          error: err.message,
+        }),
+      );
+    } else if (action === 'escalate_fm') {
+      const body =
+        `On-call escalation: ${incident.issue_category || 'incident'} — the on-call person ` +
+        `(${decidedBy}) needs your call. Incident ${tokenRow.incident_id}.`;
+      notifyHuman({
+        recipient: { name: incident.fm_oncall_name || undefined, phone: incident.fm_oncall_phone },
+        purpose: 'fm_escalation',
+        content: { title: 'On-call escalation', body },
+        channels: ['voice_call', 'sms'],
+        correlation: { incidentId: tokenRow.incident_id },
+      }).catch((err) =>
+        logger.error('cockpit escalate_fm notifyHuman failed', {
+          incidentId: tokenRow.incident_id,
+          error: err.message,
+        }),
       );
     }
 
@@ -309,7 +598,7 @@ router.post('/:token/decision', async (req, res) => {
     // phone call to say "this is not an emergency" would be a worse
     // experience than the current silence. Revisit once SMS works.
 
-    res.json({ success: true, action, nightOutcome });
+    res.json({ success: true, action, nightOutcome, dispatchMode });
   } catch (error) {
     logger.error('cockpit decision error', { error: error.message });
     res.status(500).json({ error: 'server_error' });
@@ -317,7 +606,7 @@ router.post('/:token/decision', async (req, res) => {
 });
 
 /**
- * POST /api/cockpit/:token/outcome — section F, after-action capture
+ * POST /api/cockpit/:token/outcome — Zone 5 after-action capture
  * ("stabilized", "resolved tonight"). Editable, not race-gated like
  * /decision — the same decider (or the office next morning) can update it.
  */
@@ -342,6 +631,39 @@ router.post('/:token/outcome', async (req, res) => {
     res.json({ success: true, outcome });
   } catch (error) {
     logger.error('cockpit outcome error', { error: error.message });
+    res.status(500).json({ error: 'server_error' });
+  }
+});
+
+/**
+ * POST /api/cockpit/:token/forward — Zone 4 "forward a safe brief".
+ * Creates a read-only, code-stripped link the on-call person can send to an
+ * SP or a colleague without leaking building access codes.
+ */
+router.post('/:token/forward', async (req, res) => {
+  try {
+    const { tokenRow, error } = await loadTokenContext(req.params.token);
+    if (error === 'not_found') return res.status(404).json({ error: 'not_found' });
+    if (error === 'expired') return res.status(410).json({ error: 'expired' });
+
+    const forwardToken = crypto.randomBytes(24).toString('hex');
+    const expiresAt = new Date(Date.now() + 12 * 60 * 60 * 1000); // 12h, matches cockpit token
+
+    await db.query(
+      `INSERT INTO cockpit_forward_link (incident_id, token, created_by_person, expires_at)
+       VALUES ($1, $2, $3, $4)`,
+      [tokenRow.incident_id, forwardToken, tokenRow.person_name || tokenRow.phone, expiresAt],
+    );
+    await db.query(
+      `INSERT INTO incident_timeline (incident_id, event_type, event_data)
+       VALUES ($1, 'cockpit.forward_created', $2)`,
+      [tokenRow.incident_id, JSON.stringify({ by: tokenRow.person_name || tokenRow.phone })],
+    );
+
+    const base = process.env.FRONTEND_URL || process.env.APP_URL || '';
+    res.json({ url: `${base.replace(/\/$/, '')}/cockpit/forward/${forwardToken}`, expiresAt });
+  } catch (error) {
+    logger.error('cockpit forward error', { error: error.message });
     res.status(500).json({ error: 'server_error' });
   }
 });

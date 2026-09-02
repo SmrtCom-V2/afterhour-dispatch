@@ -5,6 +5,12 @@ import './CookieConsent.css';
 const COOKIE_CONSENT_KEY = 'cookie_consent';
 const COOKIE_PREFERENCES_KEY = 'cookie_preferences';
 
+// Token-authed operational pages, opened from an SMS/email link by someone
+// acting on a live incident — not marketing pages with "visitors". A cookie
+// banner over the 3am decision cockpit is noise at best, a click-blocking
+// overlay at worst.
+const SUPPRESSED_PATH_PREFIXES = ['/cockpit/', '/report/'];
+
 export function CookieConsent() {
   const { t } = useLanguage();
   const [visible, setVisible] = useState(false);
@@ -16,6 +22,9 @@ export function CookieConsent() {
   });
 
   useEffect(() => {
+    if (SUPPRESSED_PATH_PREFIXES.some((p) => window.location.pathname.startsWith(p))) {
+      return undefined;
+    }
     // Check if user has already consented
     const consent = localStorage.getItem(COOKIE_CONSENT_KEY);
     if (!consent) {

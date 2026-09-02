@@ -272,6 +272,93 @@ async function waitForResponse(attemptId, timeoutMs) {
 }
 
 /**
+ * Manual dispatch: the on-call person is phoning the service provider
+ * themselves from the cockpit ("I'll call them" instead of "System calls
+ * them"). We do NOT run the call loop — but we still record the assignment
+ * and issue the report token + "NO REPORT = NO PAYMENT" SMS, so the
+ * accountability loop is identical to an auto-dispatch that the SP accepted.
+ *
+ * Called (fire-and-forget) from cockpit.js after the decision row is written.
+ *
+ * @param {string} incidentId
+ * @param {string|null} spId - the SP the human said they'd call; null if they
+ *   picked "send a company" without choosing one (rare — falls back to a log).
+ * @param {string} decidedBy - person name/phone, for the timeline entry.
+ */
+export async function recordManualDispatch(incidentId, spId, decidedBy) {
+  if (!spId) {
+    logger.warn('recordManualDispatch called without an SP — nothing to record', { incidentId, decidedBy });
+    return { success: false, error: 'no_sp' };
+  }
+
+  const incidentResult = await db.query(
+    `SELECT i.id, i.issue_category, b.address as building_address
+     FROM incident i LEFT JOIN building b ON i.building_id = b.id
+     WHERE i.id = $1`,
+    [incidentId],
+  );
+  const spResult = await db.query(
+    `SELECT id, company_name, phone, email FROM service_provider WHERE id = $1`,
+    [spId],
+  );
+  if (incidentResult.rows.length === 0 || spResult.rows.length === 0) {
+    logger.error('recordManualDispatch: incident or SP not found', { incidentId, spId });
+    return { success: false, error: 'not_found' };
+  }
+  const incident = incidentResult.rows[0];
+  const sp = spResult.rows[0];
+
+  await db.query(
+    `UPDATE incident SET status = 'sp_accepted', assigned_sp_id = $1 WHERE id = $2`,
+    [sp.id, incidentId],
+  );
+
+  const token = uuidv4();
+  const deadline = new Date();
+  deadline.setHours(9, 0, 0, 0);
+  if (deadline <= new Date()) deadline.setDate(deadline.getDate() + 1);
+
+  await db.query(
+    `INSERT INTO sp_report (incident_id, service_provider_id, token, token_expires_at, status)
+     VALUES ($1, $2, $3, $4, 'pending')`,
+    [incidentId, sp.id, token, deadline],
+  );
+
+  await addTimelineEntry(incidentId, 'sp_manual_dispatch', {
+    spId: sp.id,
+    spName: sp.company_name,
+    decidedBy,
+  });
+
+  const reportLink = `${process.env.APP_URL || 'http://localhost:3000'}/report/${token}`;
+  const emailProvider = await getEmailProvider();
+  try {
+    await emailProvider.sendSpReportLink(
+      sp.email || '',
+      sp.company_name,
+      `${incident.issue_category} at ${incident.building_address || 'Unknown location'}`,
+      reportLink,
+      deadline.toISOString(),
+    );
+  } catch (error) {
+    logger.error('recordManualDispatch: SP report link email failed — continuing to SMS', {
+      incidentId,
+      spId: sp.id,
+      error: error.message,
+    });
+  }
+
+  const telephony = getTelephonyProvider();
+  await telephony.sendSms(
+    sp.phone,
+    `Job assigned (the on-call manager is calling you). Submit report by 9 AM: ${reportLink}\n\nNO REPORT = NO PAYMENT`,
+  );
+
+  logger.info('Manual dispatch recorded', { incidentId, spId: sp.id, decidedBy });
+  return { success: true };
+}
+
+/**
  * Handle SP accepting the job
  */
 async function handleSpAccepted(incident, sp, attemptId) {
@@ -505,4 +592,4 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-export default { startDispatch, handleSpResponse };
+export default { startDispatch, handleSpResponse, recordManualDispatch };
